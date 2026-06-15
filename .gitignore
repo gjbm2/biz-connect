@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Local / OS
+.DS_Store
+Thumbs.db
+*.tmp
+~$*
+
+# NEVER commit secrets. biz-connect keeps credentials in the per-user central
+# store (~/.config/biz-connect), never in this repo. These guards exist only to
+# catch an accidental drop of a key file into the tree.
+service-account*.json
+*-service-account.json
+**/service-account*.json
+secrets.env
+.env

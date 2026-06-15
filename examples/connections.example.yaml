@@ -1,0 +1,31 @@
+# biz-connect attachpoints for this repo.
+#
+# COMMITTED, and contains NO secrets — only IDs/URLs, which are not sensitive.
+# Credentials live in the per-user central store (~/.config/biz-connect).
+# Copy this to your repo root as `connections.yaml` (or run `bizconnect init`).
+
+google:
+  # New Google Docs created by `gdoc push` are shared back to this address (Editor),
+  # so they appear in your own Drive (the service account can't surface a UI).
+  share_with: you@example.com
+
+  # Optional: create new Docs inside this Drive folder or shared drive
+  # (paste the folder URL or its id). Leave blank to use share_with instead.
+  drive_folder:
+
+  # local-Markdown -> Google Doc bindings. `gdoc push <file>` fills these in on
+  # first push; `gdoc link <file> <url>` binds an existing Doc. Keys are repo-relative.
+  docs: {}
+    # response/draft.md:
+    #   doc_id: 1AbC...
+    #   url: https://docs.google.com/document/d/1AbC.../edit
+
+notion:
+  # Default page for `notion <verb> .` (the "." shorthand). Paste a page URL or id.
+  notes_page:
+  # Optional named databases, e.g. tasks: <db-id>
+  # databases: {}
+
+git:
+  protected: [main, master]
+  # co_author: "Claude <noreply@anthropic.com>"   # appended to `git save` commits

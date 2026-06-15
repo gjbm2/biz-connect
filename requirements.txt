@@ -1,0 +1,12 @@
+# biz-connect runtime dependencies (installed into the central-store venv by the
+# launcher: scripts/bizconnect.py). The Notion connector is stdlib-only and needs
+# none of these; they are for the Google connectors + config.
+
+google-api-python-client>=2.100
+google-auth>=2.20
+ruamel.yaml>=0.18
+
+# --- Phase 2 connectors (PPTX / XLSX / DOCX), added when those land ---
+# python-pptx>=0.6.23
+# openpyxl>=3.1
+# python-docx>=1.1

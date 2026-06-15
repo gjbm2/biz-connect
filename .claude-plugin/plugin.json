@@ -1,0 +1,21 @@
+{
+  "name": "biz-connect",
+  "version": "0.1.0",
+  "description": "Connect a repo to business services: Google Drive/Docs <-> local Markdown sync, Notion, Google Sheets, and standardized git flow. Per-repo bindings live in connections.yaml; credentials live in a per-user central store.",
+  "author": {
+    "name": "Greg Marsh",
+    "email": "greg@nous.co"
+  },
+  "repository": "https://github.com/gjbm2/biz-connect",
+  "license": "MIT",
+  "keywords": [
+    "google-docs",
+    "google-drive",
+    "notion",
+    "markdown",
+    "sync",
+    "sheets",
+    "git",
+    "connectors"
+  ]
+}

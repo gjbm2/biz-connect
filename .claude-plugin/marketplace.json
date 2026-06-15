@@ -1,0 +1,21 @@
+{
+  "name": "biz-connect",
+  "owner": {
+    "name": "Greg Marsh",
+    "email": "greg@nous.co"
+  },
+  "description": "Biz Connect — business-service connectors for Claude Code (Google Drive/Docs, Notion, Sheets, git).",
+  "plugins": [
+    {
+      "name": "biz-connect",
+      "source": "./",
+      "description": "Google Drive/Docs <-> Markdown sync, Notion, Sheets, and standardized git flow, driven by a per-repo connections.yaml.",
+      "author": {
+        "name": "Greg Marsh",
+        "email": "greg@nous.co"
+      },
+      "license": "MIT",
+      "keywords": ["google-docs", "notion", "markdown", "sync", "sheets", "git"]
+    }
+  ]
+}
