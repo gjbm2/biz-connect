@@ -7,15 +7,42 @@ allowed-tools: Agent, Bash(python *), Read, Edit, Write
 # Document-composition pipeline (`compose`)
 
 Treat the document as a **compiled artifact**: corpus → per-item evidence pack → per-item
-spec (argument guide) → per-item draft → critique → ladder-up to front matter → lint →
-render. Deterministic glue (`assemble`, `lint`, `render`, staleness) runs as code; the
-judgement steps (`spec`, `draft`, `critique`, `ladder`) are **yours** to write, using the
-repo's own `prompts/<stage>.md` templates. The engine is content-free; everything specific
-lives in the repo's `pipeline.yaml` and the files it names.
+draft → critique → ladder-up to front matter → lint → render. Deterministic glue
+(`assemble`, `lint`, `render`, staleness) runs as code; the judgement steps (`draft`,
+`critique`, `ladder`, and the optional `spec`) are **yours** to write, using the repo's own
+`prompts/<stage>.md` templates. The engine is content-free; everything specific lives in the
+repo's `pipeline.yaml` and the files it names.
 
-**Clobber-safe:** `compose` writes proposals into `build/…gen.md`; the human-owned files
-(`context/`, `answers/`, `submission/`) are only changed when you promote a draft. Never
-overwrite them blindly.
+## Inputs vs outputs — read this before you write anything
+
+The pipeline **consumes inputs** and **produces outputs**. Which one a file is tells you
+whether the build may write it:
+
+- **INPUTS — human-owned; the build READS them, never writes them.** The global guide
+  (`context/<global>.md`), the per-item guides (`context/<items>/<id>.md`), the items JSON,
+  the corpus index, `prompts/*`, the intro, and the front-matter template.
+- **OUTPUTS — the build CREATES them.** `answers/<id>.md`, `submission/<front-matter>.md`,
+  `final/<doc>.md`.
+- **SCRATCH — `build/*`** (git-ignored): evidence packs, assembled prompts, `*.gen.md` proposals.
+
+A **build** turns inputs into outputs: **draft → ladder → lint → render → publish.** It only
+ever *creates* outputs. **If a step is about to write under `context/`, stop — that's an
+input.** `compose` itself never writes a human-owned file; *you* promote a gen, and you only
+ever promote **forward into an output**.
+
+## `spec` is optional input-authoring — NOT a build step
+
+`spec` is the one stage that writes **backward into an input**: it proposes a per-item
+argument guide (`context/<items>/<id>.md`) that `draft` later **reads**. Use it **only** to
+help author a guide that is still **empty**, and only with a human merging the proposal in.
+A routine build:
+
+- does **not** run `spec` when the guide already has content; and
+- **never** auto-promotes a `spec` gen over an existing guide (that destroys human input).
+
+If the per-item guides already exist, **skip `spec` and go straight to `draft`** — the draft
+prompt already injects the global guide, the per-item guide, and the full evidence pack.
+(`compose run spec` prints a ⚠ when its target guide is non-empty, for exactly this reason.)
 
 ## How to run
 
@@ -50,8 +77,10 @@ for "build/assemble/create the document" is the full sequence:
 2. `compose scaffold` — create any missing per-item guides.
 3. **Draft every answer.** `compose run draft all` writes one draft prompt per item into
    `build/`. Execute them — ideally **one subagent per item, fanned out in parallel** (Agent
-   tool) — writing each answer to `answers/<id>.md`. Run `spec` first for items whose guide is
-   thin, if you want an argument plan before drafting.
+   tool) — writing each answer to `answers/<id>.md` (an output the build creates). The guides
+   in `context/` are inputs: draft reads them; the build never rewrites them. (If a guide is
+   still *empty*, you may run `spec` first and have a human merge its proposal in — never
+   auto-promote `spec`; see "spec is optional input-authoring" above.)
 4. `compose run ladder` — distil the front matter from the answers.
 5. `compose run lint` — provenance / marker / register checks.
 6. `compose run render` — assemble `final/<doc>.md`.
@@ -68,16 +97,17 @@ status` shows what's actually stale, so you rebuild exactly what changed and not
 
 ## Producing one item (the happy path)
 
-For an item id (e.g. `Q7`):
+For an item id (e.g. `Q7`) — its guide `context/.../Q7.md` already exists (an input):
 
-1. **`compose run spec Q7`** → writes `build/Q07.spec.prompt.md` (auto-assembling the
-   evidence pack first). **You** run that prompt: read the file, write the spec, save it to
-   `build/Q07.spec.gen.md`, then merge the good parts into the human-owned guide
-   `context/.../Q07.md`. Then **`compose accept spec Q7`**.
-2. **`compose run draft Q7`** → `build/Q07.draft.prompt.md`. You write the answer → save to
-   `build/Q07.draft.gen.md` → promote into `answers/Q07.md`. Then **`compose accept draft Q7`**.
+1. *(optional, only if the guide is still empty)* **`compose run spec Q7`** → writes
+   `build/Q07.spec.prompt.md`. You run it and save to `build/Q07.spec.gen.md`; **a human**
+   merges the good parts into the guide. **Skip this when the guide already has content** —
+   the guide is an input the build reads, not something the build regenerates.
+2. **`compose run draft Q7`** → `build/Q07.draft.prompt.md` (reads the guide + global + evidence).
+   You write the answer → save to `build/Q07.draft.gen.md` → promote into the **output**
+   `answers/Q07.md`. Then **`compose accept draft Q7`**.
 3. **`compose run critique Q7`** → `build/Q07.critique.prompt.md`. You produce the review →
-   `build/Q07.critique.gen.md`; revise `answers/Q07.md` if needed.
+   `build/Q07.critique.gen.md` (scratch); revise `answers/Q07.md` if needed.
 4. When several answers are ready: **`compose run ladder`** — front matter (cover · intro ·
    position · executive summary), distilled from the answers. It follows the repo's
    `front_matter_template` (`{{TEMPLATE}}`) and weaves in `intro` (`{{INTRO}}`). Then
@@ -86,17 +116,24 @@ For an item id (e.g. `Q7`):
 ## Full build: fan out to high-reasoning agents, deliver a GDoc
 
 A full build runs the per-item LLM work as **parallel high-reasoning subagents** (the
-deterministic steps stay code). For a stage across all items (`spec` / `draft` / `critique`):
+deterministic steps stay code). The per-item build stage is **`draft`** (optionally
+`critique`); it **reads** the existing guides — it does not regenerate them.
 
-1. `… compose run <stage> all` — writes every item's prompt into `build/<id>.<stage>.prompt.md`.
+1. `… compose run draft all` — writes every item's prompt into `build/<id>.draft.prompt.md`.
 2. **Fan out:** launch one subagent per item *in parallel* with the **Agent** tool, each on a
-   high-reasoning model (`model: opus`). Tell each to read its `build/<id>.<stage>.prompt.md`,
-   do the writing, and save **only** to `build/<id>.<stage>.gen.md` — never a human-owned file.
-3. **Promote + record:** merge each `…gen.md` into its canonical human-owned file
-   (`spec`→`context/<id>.md`, `draft`→`answers/<id>.md`), then `… compose accept <stage> all`.
+   high-reasoning model (`model: opus`). Tell each to read its `build/<id>.draft.prompt.md`,
+   do the writing, and save **only** to `build/<id>.draft.gen.md` — never a human-owned file.
+3. **Promote forward + record:** promote each `…gen.md` into its **output** file
+   (`draft`→`answers/<id>.md`, which the build creates), then `… compose accept draft all`.
+   Run `critique all` the same way for an adversarial pass (its gens stay in `build/` scratch);
+   revise answers as needed.
 
-Then the single-shot steps (no fan-out): `… compose run ladder` → promote the front matter;
-`… compose run lint`; `… compose run render`.
+**Do not fan out `spec` as part of a build** — it writes into the `context/` guides, which are
+inputs (see "`spec` is optional input-authoring"). Run `spec` only deliberately, for an empty
+guide, with a human promoting it.
+
+Then the single-shot steps (no fan-out): `… compose run ladder` → promote the front matter
+into `submission/` (an output); `… compose run lint`; `… compose run render`.
 
 **Deliver for review:** `… gdoc push <final>` pushes the rendered document to a Google Doc
 (created and bound in `connections.yaml` on first run). That Doc is what reviewers mark up —

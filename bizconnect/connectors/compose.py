@@ -12,17 +12,32 @@ that item's chain goes stale, never the whole graph.
 Targets (per-item targets are parameterised over the items in your `pipeline.yaml`):
     inputs          (code) sync external source docs    -> files named by connections.yaml `inputs:`
     assemble:<id>   (code) evidence pack for an item   -> <build>/<id>.context.md
-    spec:<id>       (llm)  the item's argument guide    -> <local_dir>/<id>.md   (human-owned)
-    draft:<id>      (llm)  the item's answer            -> <answers_dir>/<id>.md (human-owned)
+    spec:<id>       (llm)  the item's argument guide    -> <local_dir>/<id>.md   (an INPUT — see WARNING)
+    draft:<id>      (llm)  the item's answer            -> <answers_dir>/<id>.md (an OUTPUT)
     critique:<id>   (llm)  adversarial review           -> <build>/<id>.critique.gen.md
-    ladder          (llm)  front matter: template+intro over answers -> <submission> (human-owned)
+    ladder          (llm)  front matter: template+intro over answers -> <submission> (an OUTPUT)
     lint            (code) completeness / provenance    -> <build>/lint-report.md
     render          (code) assembled document           -> <final>
 
+INPUTS vs OUTPUTS — the build CONSUMES inputs and PRODUCES outputs; know which is which:
+    inputs  (human-owned; the build READS them, never writes them): <global_context>,
+            <local_dir>/<id>.md (the per-item guides), the items JSON, the corpus index,
+            prompts/*, the intro and the front-matter template.
+    outputs (the build CREATES them): <answers_dir>/<id>.md, <submission>, <final>.
+    scratch: <build>/* — evidence packs, prompts, and *.gen.md proposals (git-ignored).
+A "build" = draft -> ladder -> lint -> render -> publish. It only ever CREATES outputs.
+
+WARNING — `spec` is the ONE stage that writes BACKWARD into an input. Its promotion target
+<local_dir>/<id>.md is the per-item guide that `draft` later READS (see draft's inputs).
+So `spec` is an OPTIONAL, pre-build authoring aid for an *empty* guide, which a human merges
+in. A routine build does NOT run `spec` over a guide that already has content, and NEVER
+auto-promotes a `spec` gen over an existing guide — that would destroy a human-authored input.
+Every other stage promotes FORWARD into an output.
+
 code targets run here (deterministic). llm targets are run by an AGENT: compose assembles
 the exact prompt (your template + resolved context) into <build>/, you run it, promote the
-result into the human-owned canonical file, then record it with `accept`. compose NEVER
-overwrites a human-owned file (clobber-safe).
+result FORWARD into its output file, then record it with `accept`. compose NEVER overwrites
+any human-owned file (clobber-safe) — and never writes an input for you.
 
 Verbs
 -----
@@ -54,9 +69,17 @@ STAGES = {
     "ladder":   {"owner": "llm",  "per_item": False},
     "lint":     {"owner": "code", "per_item": False},
     "render":   {"owner": "code", "per_item": False},
+    "harvest":  {"owner": "code", "per_item": False},
+    "coherence": {"owner": "llm", "per_item": False},
     "assimilate": {"owner": "llm", "per_item": False},
     "digest":   {"owner": "llm",  "per_item": False},
 }
+
+# Stages whose promotion target is itself a downstream INPUT (not a build output). `spec`
+# promotes into <local_dir>/<id>.md — the per-item guide that `draft` reads — so promoting it
+# REWRITES a human-authored input. Every other stage promotes forward into an output. The
+# build must never auto-promote these; `run` warns loudly when one is invoked (see cmd_run).
+INPUT_PROMOTION_STAGES = {"spec"}
 
 
 # --------------------------------------------------------------- config (pipeline.yaml)
@@ -188,6 +211,11 @@ def inputs_for(cfg, stage, pid=None):
     if stage == "render":
         sub = cfg.loc("submission")
         return cfg.globrel(A) + ([sub] if sub else [])
+    if stage == "harvest":
+        sub = cfg.loc("submission")
+        return cfg.globrel(A) + ([sub] if sub else [])
+    if stage == "coherence":
+        return ["%s/coherence.md" % P, G, cfg.loc("final", "final/document.md")]
     if stage == "assimilate":
         return (["%s/assimilate.md" % P, G, FB] + cfg.globrel(A) + cfg.globrel(L)
                 + ["%s/draft.md" % P, "%s/spec.md" % P, items_src] + reg)
@@ -210,6 +238,8 @@ def output_for(cfg, stage, pid=None):
         "ladder":   cfg.loc("submission", "%s/submission.md" % B),
         "lint":     "%s/lint-report.md" % B,
         "render":   cfg.loc("final", "final/document.md"),
+        "harvest":  "%s/harvest.json" % FB,
+        "coherence": "%s/coherence.gen.md" % B,
         "assimilate": "%s/cycle.gen.md" % FB,
         "digest":   cfg.loc("brief", "%s/brief.gen.md" % FB),
     }[stage]
@@ -228,6 +258,7 @@ def gen_for(cfg, stage, pid=None):
     return {"spec": "%s/%s.spec.gen.md" % (B, pid), "draft": "%s/%s.draft.gen.md" % (B, pid),
             "critique": "%s/%s.critique.gen.md" % (B, pid),
             "ladder": "%s/submission.gen.md" % B,
+            "coherence": "%s/coherence.gen.md" % B,
             "assimilate": "%s/cycle.gen.md" % FB,
             "digest": "%s/brief.gen.md" % FB}.get(stage)
 
@@ -404,6 +435,9 @@ def assemble_prompt(cfg, stage, raw, pid):
         m["REGISTER"] = cfg.read(cfg.loc("register", "")) or "(register empty)"
     if stage == "digest":
         m["REGISTER"] = cfg.read(cfg.loc("register", "")) or "(register empty)"
+    if stage == "coherence":
+        m["DOCUMENT"] = (cfg.read(cfg.loc("final", "final/document.md"))
+                         or "(no rendered document yet — run render first)")
     return _fill(tmpl, m)
 
 
@@ -428,6 +462,18 @@ def run_inputs(cfg):
         typ, dest, ref = spec.get("type", "gdoc"), spec.get("extract_to"), spec.get("doc_id") or spec.get("url")
         if not dest or not ref:
             lock[handle] = {"skipped": "missing extract_to or url"}; continue
+        if typ == "notion":
+            from .notion import sync_to_dir
+            summary = sync_to_dir(ref, cfg.ap(dest), exclude=spec.get("exclude"),
+                                  max_depth=int(spec.get("max_depth", 3)),
+                                  download_files=bool(spec.get("download_files", True)),
+                                  follow_links=bool(spec.get("follow_links", True)),
+                                  catalog_links=bool(spec.get("catalog_links", True)))
+            synced += 1
+            if summary.get("refreshed"):
+                refreshed += 1
+            lock[handle] = {"extract_to": dest, "type": "notion", **summary}
+            continue
         if typ != "gdoc":
             lock[handle] = {"skipped": "type %r not supported yet" % typ}; continue
         if drive is None:
@@ -453,6 +499,83 @@ def run_assemble(cfg, raw, pid):
     return "wrote %s/%s.context.md" % (cfg.build_dir, pid)
 
 
+# --------------------------------------------------------- body cleaning / open points
+# An answer / front-matter file is CLEAN publishable prose followed by an OPTIONAL trailing
+# ```open-points YAML block. The body that renders/publishes must carry no open-point markers;
+# every open point lives in the block, from where `harvest` lifts it into the register and onto
+# the review Doc as a comment. These helpers split, clean, and parse that structure.
+OPEN_POINTS_FENCE = "```open-points"
+_INLINE_MARKER_RE = re.compile(r"\[(?:VERIFY|DECISION|RECONCILE|UPDATE)\b[^\]]*\]", re.I)
+
+
+def split_open_points(text):
+    """(clean_body, block_text|None). The block is everything from the ```open-points fence to
+    the end (with any immediately-preceding 'Open points' heading folded out of the body)."""
+    if not text:
+        return text or "", None
+    idx = text.find(OPEN_POINTS_FENCE)
+    if idx == -1:
+        return text, None
+    body = re.sub(r"(?:\n)#{1,6}[ \t]*open[ \t-]*points[^\n]*[ \t]*$", "", text[:idx], flags=re.I)
+    return body.rstrip() + "\n", text[idx:]
+
+
+def _strip_inline_markers(text):
+    """Belt-and-braces: drop any stray inline [VERIFY/DECISION/RECONCILE/UPDATE: …] aside the
+    prompts already forbid, and tidy the whitespace it leaves, so a residual never publishes."""
+    if not text:
+        return text
+    text = _INLINE_MARKER_RE.sub("", text)
+    text = re.sub(r"[ \t]+([.,;:])", r"\1", text)
+    text = re.sub(r"\(\s*\)", "", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return re.sub(r"\n{3,}", "\n\n", text)
+
+
+def clean_for_render(text):
+    body, _ = split_open_points(text)
+    return _strip_inline_markers(body).rstrip()
+
+
+def inject_question(answer_text, qtext):
+    """Place the source question as a subhead directly under the answer's first heading."""
+    if not qtext:
+        return answer_text
+    lines = answer_text.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith("#"):
+            if i + 1 < len(lines) and "question." in lines[i + 1].lower():
+                return answer_text
+            lines[i + 1:i + 1] = ["", "> **Ofgem's question.** %s" % qtext.strip()]
+            return "\n".join(lines)
+    return "> **Ofgem's question.** %s\n\n%s" % (qtext.strip(), answer_text)
+
+
+def parse_open_points(text, qid):
+    """Parse the trailing ```open-points YAML list into dicts (tolerant: [] if absent/bad)."""
+    _, block = split_open_points(text)
+    if not block:
+        return []
+    m = re.search(r"```open-points[ \t]*\n(.*?)```", block, re.S)
+    if not m:
+        return []
+    try:
+        import io
+        from ruamel.yaml import YAML
+        data = YAML(typ="safe").load(io.StringIO(m.group(1)))
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for e in data:
+        if isinstance(e, dict):
+            e = dict(e)
+            e.setdefault("question", qid)
+            out.append(e)
+    return out
+
+
 def run_lint(cfg):
     cfg.ap(cfg.build_dir).mkdir(parents=True, exist_ok=True)
     A = cfg.loc("answers_dir", "answers")
@@ -472,13 +595,20 @@ def run_lint(cfg):
                    for l in spec.splitlines() if l.startswith("status:")), "?")
         body.append("- guide status: %s" % st)
         if ans:
-            for mk in markers:
-                n = ans.count(mk)
-                if n:
-                    body.append("- %d unresolved `%s…`" % (n, mk)); problems += 1
-            if prov and prov not in ans:
+            clean, _block = split_open_points(ans)
+            inline = sum(clean.count(mk) for mk in markers)
+            if inline:
+                body.append("- ✗ %d inline marker(s) in body — must be 0; open points belong in "
+                            "the open-points block / register, not the prose" % inline); problems += 1
+            ops = parse_open_points(ans, raw)
+            if ops:
+                body.append("- %d open point(s) in block (harvested to register)" % len(ops))
+            if prov and prov not in clean:
                 body.append("- ⚠ no `%s…` provenance citations" % prov); problems += 1
-            body.append("- %d words" % len(ans.split()))
+            wc = len(clean.split())
+            soft = cfg.g("soft_cap_words")
+            note = "  ⚠ long — review for concision" if (soft and wc > int(soft)) else ""
+            body.append("- %d words%s" % (wc, note))
         body.append("")
     reg = cfg.loc("register")
     regtxt = cfg.read(reg) if reg else None
@@ -492,12 +622,12 @@ def run_lint(cfg):
             for f in ("%s/%s.md" % (A, it["pad"]), "%s/%s.md" % (L, it["pad"])):
                 intext |= set(re.findall(r"\bISS-\d+\b", cfg.read(f) or ""))
         body.append("## register <-> markers")
-        for i in sorted(reg_ids - intext):
-            body.append("- %s open in register but no in-text marker" % i); problems += 1
+        # Clean-body model: open points live in the register + each answer's open-points block,
+        # NOT as inline [DECISION: ISS-nnn] markers. So a register id with no in-text marker is
+        # normal (not an issue). Only an in-text ISS that has NO register row is a real error.
         for i in sorted(intext - reg_ids):
             body.append("- marker %s in text but not in register" % i); problems += 1
-        if reg_ids and reg_ids == intext:
-            body.append("- in sync (%d id(s))" % len(reg_ids))
+        body.append("- register: %d open point(s); %d in-text ISS marker(s)" % (len(reg_ids), len(intext)))
         body.append("")
     sub = cfg.loc("submission")
     if sub:
@@ -508,19 +638,106 @@ def run_lint(cfg):
 
 
 def run_render(cfg):
+    """Assemble the final document from CLEAN bodies only: each answer/front-matter file has its
+    trailing open-points block and any stray inline markers stripped, and each answer gets the
+    source question injected as a subhead under its heading."""
     final = cfg.loc("final", "final/document.md")
     cfg.ap(final).parent.mkdir(parents=True, exist_ok=True)
     A = cfg.loc("answers_dir", "answers")
     parts = [cfg.g("title", "# Document"), ""]
     sub = cfg.loc("submission")
     if sub and cfg.read(sub):
-        parts += [cfg.read(sub), "", "---", ""]
+        parts += [clean_for_render(cfg.read(sub)), "", "---", ""]
     for it in load_items(cfg):
         a = cfg.read("%s/%s.md" % (A, it["pad"]))
         if a:
-            parts += [a, "", "---", ""]
+            parts += [inject_question(clean_for_render(a), it.get("text", "")), "", "---", ""]
     cfg.ap(final).write_text("\n".join(parts), encoding="utf-8")
     return "wrote %s" % final
+
+
+# --------------------------------------------------- harvest (open points -> register)
+# `harvest` is the build's bridge into the open-points register: it parses every answer's (and
+# the front matter's) trailing open-points block, allocates a stable ISS id per point via the
+# register, and writes <feedback>/harvest.json (the point list + anchors) for the publish step
+# to post as Doc comments. It is the build-side analogue of `assimilate` (reviewer feedback).
+_KIND_DISP = {"verify": "research", "decision": "discussion", "reconcile": "rethink"}
+
+
+def _norm_point(op, qid, target):
+    kind = (str(op.get("kind", "verify")).strip().lower() or "verify")
+    anchor = str(op.get("anchor", "")).strip()
+    note = str(op.get("note", "")).strip()
+    disp = str(op.get("disposition") or _KIND_DISP.get(kind, "research")).strip().lower()
+    layer = str(op.get("layer") or ("front-matter" if qid == "front-matter" else "answer")).strip()
+    sig = hashlib.sha1(("%s|%s|%s" % (qid, kind, anchor)).encode("utf-8")).hexdigest()[:8]
+    return {"question": qid, "kind": kind, "anchor": anchor, "note": note,
+            "disposition": disp, "layer": layer, "iss": str(op.get("iss") or "").strip(),
+            "src_id": "build:%s:%s:%s" % (qid, kind, sig), "target": target}
+
+
+def _harvest_points(cfg):
+    A = cfg.loc("answers_dir", "answers")
+    pts = []
+    for it in load_items(cfg):
+        for op in parse_open_points(cfg.read("%s/%s.md" % (A, it["pad"])), it["raw"]):
+            pts.append(_norm_point(op, it["raw"], "%s/%s.md" % (A, it["pad"])))
+    sub = cfg.loc("submission")
+    if sub:
+        for op in parse_open_points(cfg.read(sub), "front-matter"):
+            pts.append(_norm_point(op, "front-matter", sub))
+    return pts
+
+
+def _point_to_delta(p):
+    row = {
+        "title": "%s — %s" % (p["question"], (p["note"][:60] or p["kind"])),
+        "questions": [p["question"]],
+        "disposition": p["disposition"],
+        "layer": p["layer"],
+        "targets": p["target"],
+        "marker": "[%s] %s" % (p["kind"].upper(), p["note"][:120]),
+        "author": "build",
+        "source_comment_id": p["src_id"],
+        "input": 'Build-generated %s point on %s. Anchored to: "%s". %s' % (
+            p["kind"], p["question"], p["anchor"], p["note"]),
+        "interpretation": p["note"],
+        "history_append": "raised by build harvest",
+    }
+    if p["iss"]:
+        row["iss"] = p["iss"]
+    return row
+
+
+def run_harvest(cfg):
+    """Lift every open point from the answers + front matter into the register, and write
+    <feedback>/harvest.json for publish. Never fails the build: if the register/Notion is
+    unavailable the points are still written locally and flagged."""
+    fb = cfg.loc("feedback_dir", "%s/feedback" % cfg.build_dir)
+    cfg.ap(fb).mkdir(parents=True, exist_ok=True)
+    pts = _harvest_points(cfg)
+    dpath = cfg.ap("%s/harvest.deltas.json" % fb)
+    dpath.write_text(json.dumps([_point_to_delta(p) for p in pts], indent=2, ensure_ascii=False),
+                     encoding="utf-8")
+    reg_status = "register not configured (points written locally only)"
+    if cfg.loc("register"):
+        if not pts:
+            reg_status = "no open points to upsert"
+        else:
+            try:
+                from . import register
+                register.cmd_upsert([str(dpath)])
+                iss_map = register.source_id_to_iss()
+                for p in pts:
+                    p["iss"] = iss_map.get(p["src_id"], p.get("iss") or "")
+                reg_status = "upserted %d point(s) to register" % len(pts)
+            except SystemExit as e:
+                reg_status = "register upsert skipped (%s)" % (str(e) or "no register / Notion")
+            except Exception as e:                      # never fail the build on harvest
+                reg_status = "register upsert error: %s" % e
+    cfg.ap("%s/harvest.json" % fb).write_text(json.dumps(pts, indent=2, ensure_ascii=False),
+                                              encoding="utf-8")
+    return "%d open point(s) harvested; %s" % (len(pts), reg_status)
 
 
 def run_scaffold(cfg, only):
@@ -546,8 +763,10 @@ def run_scaffold(cfg, only):
         body = ["---", "item: %s" % it["raw"], "status: todo            # todo | in-progress | ready",
                 "last_reviewed:", "evidence: %s" % json.dumps(ids), "---", "",
                 "# %s" % it["raw"], "", "> %s" % it["text"], "",
-                "_Local guide. Fill the sections, or run `bizconnect compose run spec %s` for an "
-                "agent first draft, then merge here._" % it["raw"], "",
+                "_Local guide — a build INPUT: the `draft` stage READS this file. Fill the sections "
+                "by hand, or run `bizconnect compose run spec %s` to get an agent-proposed draft in "
+                "build/ and merge the good parts in. Once it has content the build drafts from it as-is; "
+                "`spec` must not overwrite it._" % it["raw"], "",
                 "## Summary", "", "## Key points", "- ", "", "## Evidence to use"] + ev + [
                 "", "## Counterpoints", "- ", "", "## Notes", "- ", ""]
         out.write_text("\n".join(body), encoding="utf-8")
@@ -603,7 +822,8 @@ def cmd_run(cfg, args):
         if STAGES[stage]["owner"] == "code":
             msg = {"inputs": lambda: run_inputs(cfg),
                    "assemble": lambda: run_assemble(cfg, raw, pid),
-                   "lint": lambda: run_lint(cfg), "render": lambda: run_render(cfg)}[stage]()
+                   "lint": lambda: run_lint(cfg), "render": lambda: run_render(cfg),
+                   "harvest": lambda: run_harvest(cfg)}[stage]()
             man[tid(stage, pid)] = {"inputs": current_inputs(cfg, stage, pid)}
             print("[code] %s — %s" % (tid(stage, pid), msg))
         else:
@@ -616,7 +836,14 @@ def cmd_run(cfg, args):
             print("[llm]  %s — prompt ready: %s" % (tid(stage, pid), pf))
             print("        run it with an agent; save output to: %s" % gen_for(cfg, stage, pid))
             canon = canonical_for(cfg, stage, pid)
-            if canon:
+            if canon and stage in INPUT_PROMOTION_STAGES:
+                nonempty = cfg.sha(canon) is not None and len((cfg.read(canon) or "").strip()) > 0
+                print("        ⚠ %s is a build INPUT (the `draft` stage reads it), NOT an output." % canon)
+                print("          `spec` only PROPOSES a guide; promoting its gen REWRITES a human input.")
+                if nonempty:
+                    print("          This guide already HAS content — do not auto-promote. Merge by hand, with sign-off.")
+                print("          A routine build skips `spec` and drafts from the existing guide as-is.")
+            elif canon:
                 print("        then promote/merge into: %s   (never overwritten by compose)" % canon)
             print("        then record: bizconnect compose accept %s %s" % (stage, raw or ""))
     save_manifest(cfg, man)
@@ -643,7 +870,7 @@ def cmd_scaffold(cfg, args):
 def cmd_graph(cfg, _args):
     print("config: %s\n" % cfg.file)
     print("targets <- inputs  (per-item targets shown as <id>):")
-    aggregate = {"ladder", "lint", "render"}
+    aggregate = {"ladder", "lint", "render", "harvest"}
     for stage in STAGES:
         pid = "<id>" if STAGES[stage]["per_item"] else None
         ins = inputs_for(cfg, stage, pid)

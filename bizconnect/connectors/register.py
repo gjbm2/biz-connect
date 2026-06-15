@@ -360,6 +360,29 @@ def cmd_pull(argv):
     _journal_append(root, data, {"op": "pull", "rows": n})
 
 
+def _next_iss(pages):
+    """Next free ISS-nnn, continuing the register's sequence (max existing + 1)."""
+    nums = []
+    for pg in pages:
+        m = re.match(r"ISS-(\d+)", _row_get(pg, "ISS") or "")
+        if m:
+            nums.append(int(m.group(1)))
+    return max(nums, default=0) + 1
+
+
+def source_id_to_iss(data=None):
+    """Map each row's SourceCommentId -> its ISS id (for callers that allocate ids via upsert
+    and then need to learn which ISS each source point received — e.g. compose `harvest`)."""
+    if data is None:
+        data, _ = config.require_connections()
+    out = {}
+    for pg in _query(data):
+        sid, iss = _row_get(pg, "SourceCommentId"), _row_get(pg, "ISS")
+        if sid and iss:
+            out[sid] = iss
+    return out
+
+
 def cmd_upsert(argv):
     data, conn_path, root = _repo()
     f = _positional(argv)
@@ -367,11 +390,13 @@ def cmd_upsert(argv):
         sys.exit("upsert needs <deltas.json|.md>")
     deltas = _load_deltas(str(_abs(root, f)))
     did = _db_id(data)
+    pages = _query(data)
     existing = {}
-    for pg in _query(data):
+    for pg in pages:
         k = _row_get(pg, "SourceCommentId") or _row_get(pg, "ISS")
         if k:
             existing[k] = pg
+    seq = _next_iss(pages)
     created = updated = 0
     for row in deltas:
         keyv = row.get("source_comment_id") or row.get("iss")
@@ -385,6 +410,9 @@ def cmd_upsert(argv):
                     "rich_text": _rich("• %s — %s" % (_today(), row["history_append"]))}}])
             updated += 1
         else:
+            if not row.get("iss"):          # allocate the next ISS for a brand-new point
+                row["iss"] = "ISS-%03d" % seq
+                seq += 1
             row.setdefault("status", "triaged")
             st, resp = notion.api("POST", "/pages", body={
                 "parent": {"database_id": did},

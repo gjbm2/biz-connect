@@ -559,10 +559,75 @@ def cmd_resolve(argv):
     print(f"resolved comment {pos[1]} on {key}")
 
 
+# --------------------------------------------------- annotate (open points -> Doc comments)
+def _open_point_comment(p):
+    """Render one harvested open point as a Doc comment. The body of the Doc stays clean —
+    open points live in the register and surface HERE, as comments, not as inline prose. The
+    trailing [harvest:<src_id>] tag makes re-annotation idempotent."""
+    head = "%s · %s (%s)" % (p.get("iss") or "open point",
+                             str(p.get("kind", "")).upper() or "NOTE", p.get("question", ""))
+    lines = [head]
+    if p.get("anchor"):
+        lines.append('re: "%s"' % p["anchor"])
+    if p.get("note"):
+        lines.append(str(p["note"]))
+    lines.append("— raised by the build · [harvest:%s]" % p.get("src_id", ""))
+    return "\n".join(lines)
+
+
+def cmd_annotate(argv):
+    """Post each harvested open point (from compose's <feedback>/harvest.json) as a comment on
+    the bound Doc. Idempotent: points already commented (matched by their [harvest:…] tag) are
+    skipped, so it is safe to re-run after every push."""
+    arg = _positional(argv, value_flags=("--from", "--kinds"))
+    src = _opt(argv, "--from")
+    if not arg or not src:
+        sys.exit("annotate needs <file> --from <harvest.json>")
+    local = _resolve_local(arg)
+    data, conn_path, root = _repo()
+    key = _rel(local, root)
+    binding = _binding(data, key)
+    if not binding or not binding.get("doc_id"):
+        sys.exit(f"no Doc bound to {key}. `gdoc push`/`gdoc link` first.")
+    doc_id = binding["doc_id"]
+    points = json.loads(_resolve_local(src).read_text(encoding="utf-8"))
+    if not isinstance(points, list):
+        sys.exit("harvest file must be a JSON list of open points")
+    kinds = _opt(argv, "--kinds")        # e.g. "decision,reconcile" — comment only the substantive items
+    if kinds:
+        want = {k.strip().lower() for k in kinds.split(",") if k.strip()}
+        points = [p for p in points if str(p.get("kind", "")).lower() in want]
+    drive = _drive(data)
+    posted = set()
+    try:
+        for c in _google.comments_list(drive, doc_id):
+            m = re.search(r"\[harvest:([^\]]+)\]", c.get("content") or "")
+            if m:
+                posted.add(m.group(1))
+    except Exception:
+        pass
+    created = skipped = failed = 0
+    for p in points:
+        sid = p.get("src_id", "")
+        if sid and sid in posted:
+            skipped += 1
+            continue
+        try:
+            drive.comments().create(fileId=doc_id, fields="id",
+                                    body={"content": _open_point_comment(p)}).execute()
+            created += 1
+        except Exception as e:
+            failed += 1
+            status, detail = _google.http_error(e)
+            print(f"  WARN comment for {p.get('iss') or sid} failed [{status}]: {detail}")
+    print(f"annotated {key}: {created} posted, {skipped} already present"
+          + (f", {failed} failed" if failed else ""))
+
+
 VERBS = {
     "push": cmd_push, "pull": cmd_pull, "link": cmd_link, "unlink": cmd_unlink,
     "status": cmd_status, "list": cmd_list,
-    "comments": cmd_comments, "diff": cmd_diff, "resolve": cmd_resolve,
+    "comments": cmd_comments, "annotate": cmd_annotate, "diff": cmd_diff, "resolve": cmd_resolve,
 }
 
 
