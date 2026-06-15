@@ -5,6 +5,35 @@ Connect any repo to **Google Drive/Docs**, **Notion**, **Google Sheets**, and a
 standardised **git** flow — with per-repo bindings and a single per-user credential
 store. Packaged as a Claude Code **plugin** (skills + CLI).
 
+## Quick start
+
+**1. Enable the plugin (once per machine)** — in the Claude Code REPL:
+
+```text
+/plugin marketplace add gjbm2/biz-connect
+/plugin install biz-connect@biz-connect
+```
+
+After the next session start, five skills are available in every project:
+`gdoc-sync`, `notion-notes`, `sheet-io`, `git-flow`, `biz-connect-setup`.
+
+**2. Set up credentials (once per user)** — never stored in any repo:
+
+```bash
+python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" init     # creates ~/.config/biz-connect/secrets.env
+#   put NOTION_TOKEN=... in secrets.env; drop your Google service-account.json in ~/.config/biz-connect/
+python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" doctor    # should print OK
+```
+
+**3. Connect a repo (once per repo)** — from the repo root:
+
+```bash
+python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" init      # writes connections.yaml; edit its attachpoints
+```
+
+Then ask Claude, or run `bizconnect gdoc push <file.md>`, `bizconnect notion …`, etc.
+(Windows: if `python` opens the Microsoft Store, use `py`.) Agents: see `CLAUDE.md`.
+
 ## The model: three layers
 
 | Layer | Where | Contains | Committed? |
