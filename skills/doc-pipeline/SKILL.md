@@ -49,6 +49,16 @@ prompt already injects the global guide, the per-item guide, and the full eviden
 All verbs go through the launcher (it bootstraps its own venv — nothing to install). Run
 from inside the consuming repo (it finds `pipeline.yaml` by walking up from the cwd):
 
+> **Umbrella repos with multiple deliverables.** A repo may host many deliverables (e.g. one
+> consultation response each) under `deliverables/<slug>/`, each with its own `pipeline.yaml`
+> carrying a top-level `deliverable:` key. **`cd` into the deliverable folder before running any
+> verb** — walk-up then finds *that* deliverable's `pipeline.yaml`, and the engine scopes
+> `connections.yaml` lookups (`notion.register_db`, `notion.docs_registry`, `inputs`,
+> `google.drive_folder`) to its `deliverables.<slug>` block, falling back to the top level.
+> Umbrella-shared files are referenced from `pipeline.yaml` with a `//` prefix (e.g.
+> `intro: //nous-background.md`), resolved from the repo root. Single-deliverable repos need
+> none of this and behave exactly as before.
+
 ```bash
 BC='python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose'
 python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose status        # FRESH/STALE/MISSING per target

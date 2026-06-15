@@ -12,7 +12,13 @@ Two locations, cleanly separated:
   holds `secrets.env` (NOTION_TOKEN, GOOGLE_SERVICE_ACCOUNT_FILE, …) and
   `service-account.json`, plus the dependency `.venv` (auto-created).
 - **Per-repo `connections.yaml`** (committed, no secrets): this repo's attachpoints —
-  which Google Doc/Drive folder/Notion page it binds to.
+  which Google Doc/Drive folder/Notion page it binds to. An **umbrella repo** that hosts
+  several deliverables under `deliverables/<slug>/` keeps shared attachpoints (Shared Drive
+  root, `secrets`, `git`, the umbrella Notion page) at the top level and per-deliverable ones
+  (its register / docs-registry DBs, `inputs`, Drive subfolder) under a `deliverables.<slug>:`
+  block. Credential setup below is **per-user and umbrella-wide — do it once, not per
+  deliverable**; build/publish commands are run from *inside* the deliverable folder so the
+  engine scopes to that `deliverables.<slug>`.
 
 ## Commands
 

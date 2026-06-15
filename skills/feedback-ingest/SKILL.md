@@ -11,8 +11,10 @@ into the pipeline as triaged, referenced **open points**, so the next draft is m
 respect to* them. The register (Notion) is the stateful spine; nothing is silently dropped or
 re-surfaced (dedupe is by comment-id).
 
-Run all verbs through the launcher, from inside the consuming repo. Let `final` be the
-rendered submission (e.g. `final/response.md`) and `FB=response/build/feedback`.
+Run all verbs through the launcher, from inside the consuming repo — or, for an umbrella repo
+that hosts deliverables under `deliverables/<slug>/`, from inside the deliverable folder (the
+engine then scopes the register, docs-registry and Doc binding to that `deliverables.<slug>`).
+Let `final` be the rendered submission (e.g. `final/response.md`) and `FB=response/build/feedback`.
 
 ## The loop
 
