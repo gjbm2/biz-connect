@@ -670,10 +670,15 @@ def _norm_point(op, qid, target):
     note = str(op.get("note", "")).strip()
     disp = str(op.get("disposition") or _KIND_DISP.get(kind, "research")).strip().lower()
     layer = str(op.get("layer") or ("front-matter" if qid == "front-matter" else "answer")).strip()
+    iss = str(op.get("iss") or "").strip()
+    # STABLE IDENTITY across revisions: once a point has been assigned an ISS, the draft carries
+    # that `iss:` forward in its open-points block, and we key dedupe on it — so a reworded prose
+    # (different anchor) updates the SAME register row instead of spawning a twin. Only a brand-new
+    # point (no ISS yet) falls back to an anchor-hash id, which upsert then promotes to a fresh ISS.
     sig = hashlib.sha1(("%s|%s|%s" % (qid, kind, anchor)).encode("utf-8")).hexdigest()[:8]
     return {"question": qid, "kind": kind, "anchor": anchor, "note": note,
-            "disposition": disp, "layer": layer, "iss": str(op.get("iss") or "").strip(),
-            "src_id": "build:%s:%s:%s" % (qid, kind, sig), "target": target}
+            "disposition": disp, "layer": layer, "iss": iss,
+            "src_id": iss if iss else "build:%s:%s:%s" % (qid, kind, sig), "target": target}
 
 
 def _harvest_points(cfg):

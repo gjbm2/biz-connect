@@ -16,7 +16,8 @@ from . import __version__, config
 
 SERVICES = {"gdoc": "gdocs", "gdocs": "gdocs", "notion": "notion",
             "sheet": "gsheets", "sheets": "gsheets", "gsheet": "gsheets", "git": "git",
-            "compose": "compose", "register": "register", "docreg": "docreg"}
+            "compose": "compose", "register": "register", "docreg": "docreg",
+            "secrets": "secrets", "secret": "secrets"}
 
 USAGE = """biz-connect — business-service connectors for this repo.
 
@@ -32,6 +33,7 @@ USAGE = """biz-connect — business-service connectors for this repo.
   bizconnect compose status|run|accept|scaffold|graph    config-driven doc-composition pipeline
   bizconnect register init|pull|upsert|open|status|resolve|journal   Notion open-points register (review feedback)
   bizconnect docreg  init|log|list|pull   Notion catalogue of produced doc instances + versions
+  bizconnect secrets pull|status          pull this repo's shared scoped creds (GCP Secret Manager) into the central store
 
 Bindings (which Doc/page this repo uses) live in ./connections.yaml.
 The doc pipeline is configured by ./pipeline.yaml (see examples/pipeline.example.yaml).
@@ -92,6 +94,10 @@ def cmd_doctor():
         print(f"  notion.register_db: {rdb.get('database_id') or '(unbound)'}")
         ddb = config.get_path(data, "notion.docs_registry") or {}
         print(f"  notion.docs_registry: {ddb.get('database_id') or '(unbound)'}")
+        sec = config.get_path(data, "secrets") or {}
+        if sec:
+            print(f"  secrets: provider={sec.get('provider', 'gcp')} "
+                  f"project={sec.get('project') or '(unset)'} pull={len(sec.get('pull') or [])}")
         print(f"  bound docs: {len(docs)}")
     else:
         print("connections.yaml: not found in this directory tree (run `bizconnect init`).")

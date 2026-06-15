@@ -148,6 +148,11 @@ PROPS = {
     "Author": {"rich_text": {}},
     "SourceCommentId": {"rich_text": {}},
     "DocLink": {"url": {}},
+    # HUMAN-OWNED. The reviewer's actionable resolution for this point. Projected into the local
+    # open-points file and thus into the next draft's {{OPEN_POINTS}}, so a Notion edit here is
+    # what flows the decision back into the document on the next build. (Discussion stays in the
+    # page body; this is the one-line instruction the generator consumes.)
+    "AgreedStep": {"rich_text": {}},
 }
 
 
@@ -201,6 +206,8 @@ def _prop_set(row, machine_only=False):
             props["Status"] = {"select": {"name": row["status"]}}
         if row.get("owner"):
             props["Owner"] = {"rich_text": _rich(row["owner"])}
+        if row.get("agreed_step"):
+            props["AgreedStep"] = {"rich_text": _rich(row["agreed_step"])}
     return props
 
 
@@ -227,6 +234,7 @@ def _page_to_row(pg):
         "related": _row_get(pg, "Related"), "owner": _row_get(pg, "Owner"),
         "raised": _row_get(pg, "Raised"), "author": _row_get(pg, "Author"),
         "source_comment_id": _row_get(pg, "SourceCommentId"), "doc_link": _row_get(pg, "DocLink"),
+        "agreed_step": _row_get(pg, "AgreedStep"),
     }
 
 
@@ -249,6 +257,25 @@ def _query(data, filt=None):
     return out
 
 
+def _ensure_props(data):
+    """Add any PROPS missing from the live register DB (e.g. AgreedStep on a register created
+    before that field existed). Idempotent + cheap, so the schema can evolve without a manual
+    migration. Never removes or rewrites existing properties."""
+    did = _db(data).get("database_id")
+    if not did:
+        return
+    try:
+        st, resp = notion.api("GET", "/databases/%s" % did)
+        if st >= 300:
+            return
+        have = set((resp or {}).get("properties", {}).keys())
+        missing = {k: v for k, v in PROPS.items() if k not in have and k != "Name"}
+        if missing:
+            notion.api("PATCH", "/databases/%s" % did, body={"properties": missing})
+    except Exception:
+        pass
+
+
 # --- projection (Notion -> local read-only Markdown) --------------------------
 def _render_entry(r):
     L = ["### %s · %s" % (r["iss"], r["title"]),
@@ -266,6 +293,8 @@ def _render_entry(r):
                        ("related", "related"), ("owner", "owner"), ("doc", "doc_link")]:
         if r.get(key):
             L.append("- %-11s %s" % (label + ":", r[key]))
+    if r.get("agreed_step"):                       # the reviewer's decision — the draft applies it
+        L.append("- AGREED STEP (apply this in the draft): %s" % r["agreed_step"])
     L.append("")
     return "\n".join(L)
 
@@ -353,6 +382,7 @@ def cmd_init(argv):
 
 def cmd_pull(argv):
     data, conn_path, root = _repo()
+    _ensure_props(data)
     n = _write_projection(data, root)
     if n is None:
         sys.exit("notion.register_db.project_to not set in connections.yaml")
@@ -385,6 +415,7 @@ def source_id_to_iss(data=None):
 
 def cmd_upsert(argv):
     data, conn_path, root = _repo()
+    _ensure_props(data)
     f = _positional(argv)
     if not f:
         sys.exit("upsert needs <deltas.json|.md>")
@@ -393,9 +424,11 @@ def cmd_upsert(argv):
     pages = _query(data)
     existing = {}
     for pg in pages:
-        k = _row_get(pg, "SourceCommentId") or _row_get(pg, "ISS")
-        if k:
-            existing[k] = pg
+        # key each row by BOTH its source-id and its ISS, so a delta can match an existing row
+        # by either (a re-harvested point carries its ISS forward as the stable identity).
+        for k in (_row_get(pg, "SourceCommentId"), _row_get(pg, "ISS")):
+            if k:
+                existing[k] = pg
     seq = _next_iss(pages)
     created = updated = 0
     for row in deltas:
