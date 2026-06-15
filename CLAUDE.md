@@ -15,8 +15,8 @@ In the Claude Code REPL:
 
 (For local development on a clone, use the path instead: `/plugin marketplace add .`)
 
-This makes five skills available in **every** project after the next session start:
-`gdoc-sync`, `notion-notes`, `sheet-io`, `git-flow`, `biz-connect-setup`.
+This makes six skills available in **every** project after the next session start:
+`gdoc-sync`, `notion-notes`, `sheet-io`, `git-flow`, `doc-pipeline`, `biz-connect-setup`.
 
 The non-interactive equivalent (e.g. from a script):
 
@@ -53,12 +53,13 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" init      # writes connecti
 
 ```bash
 B='python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py"'
-$B gdoc   push|pull|status|link <file.md>   # local Markdown <-> Google Doc
-$B notion check|read|upload|fill .          # . = this repo's notion.notes_page; text via the Notion MCP
-$B sheet  read|write|append <sheet-url>     # service-account Sheets r/w
-$B git    save|sync|pr                      # safe, standardised git flow
-$B doctor                                   # diagnose setup
-$B update                                   # check for a newer version
+$B gdoc    push|pull|status|link <file.md>   # local Markdown <-> Google Doc
+$B notion  check|read|upload|fill .          # . = this repo's notion.notes_page; text via the Notion MCP
+$B sheet   read|write|append <sheet-url>     # service-account Sheets r/w
+$B git     save|sync|pr                      # safe, standardised git flow
+$B compose status|run|accept|graph           # doc-composition pipeline (needs pipeline.yaml); `run inputs` syncs sources
+$B doctor                                    # diagnose setup
+$B update                                    # check for a newer version
 ```
 
 If a connector complains about credentials or Google Docs ownership, run

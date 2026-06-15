@@ -10,6 +10,7 @@ its declared inputs, so you can (re)build any SUBSET — change one item's input
 that item's chain goes stale, never the whole graph.
 
 Targets (per-item targets are parameterised over the items in your `pipeline.yaml`):
+    inputs          (code) sync external source docs    -> files named by connections.yaml `inputs:`
     assemble:<id>   (code) evidence pack for an item   -> <build>/<id>.context.md
     spec:<id>       (llm)  the item's argument guide    -> <local_dir>/<id>.md   (human-owned)
     draft:<id>      (llm)  the item's answer            -> <answers_dir>/<id>.md (human-owned)
@@ -45,6 +46,7 @@ from pathlib import Path
 PIPELINE_NAME = "pipeline.yaml"
 
 STAGES = {
+    "inputs":   {"owner": "code", "per_item": False},
     "assemble": {"owner": "code", "per_item": True},
     "spec":     {"owner": "llm",  "per_item": True},
     "draft":    {"owner": "llm",  "per_item": True},
@@ -160,6 +162,9 @@ def inputs_for(cfg, stage, pid=None):
     B = cfg.build_dir
     idx = cfg.g("index.source")
     items_src = cfg.g("items.source")
+    if stage == "inputs":
+        c = "connections.yaml"
+        return [c] if (cfg.root / c).exists() else []
     if stage == "assemble":
         return [G, "%s/%s.md" % (L, pid)] + ([idx] if idx else []) + [items_src]
     if stage == "spec":
@@ -183,6 +188,7 @@ def output_for(cfg, stage, pid=None):
     A = cfg.loc("answers_dir", "answers")
     B = cfg.build_dir
     return {
+        "inputs":   "%s/inputs.lock.json" % B,
         "assemble": "%s/%s.context.md" % (B, pid),
         "spec":     "%s/%s.md" % (L, pid),
         "draft":    "%s/%s.md" % (A, pid),
@@ -335,6 +341,45 @@ def assemble_prompt(cfg, stage, raw, pid):
 
 
 # --------------------------------------------------------------- code stages
+def run_inputs(cfg):
+    """Sync external inputs declared in connections.yaml `inputs:` to their local
+    Markdown copies, READ-ONLY (we never write back to the source). Idempotent:
+    only rewrites a file whose content changed. Currently supports type: gdoc."""
+    from .. import config as _conn, _google
+    from .gdocs import _doc_id_from
+    data, _p = _conn.load_connections(start=cfg.root)
+    inputs = (data or {}).get("inputs") or {}
+    cfg.ap(cfg.build_dir).mkdir(parents=True, exist_ok=True)
+    if not inputs:
+        cfg.ap("%s/inputs.lock.json" % cfg.build_dir).write_text("{}", encoding="utf-8")
+        return "no inputs declared in connections.yaml"
+    subject = _google.impersonation_subject(data)
+    drive, synced, refreshed, lock = None, 0, 0, {}
+    for handle, spec in inputs.items():
+        if not isinstance(spec, dict):
+            continue
+        typ, dest, ref = spec.get("type", "gdoc"), spec.get("extract_to"), spec.get("doc_id") or spec.get("url")
+        if not dest or not ref:
+            lock[handle] = {"skipped": "missing extract_to or url"}; continue
+        if typ != "gdoc":
+            lock[handle] = {"skipped": "type %r not supported yet" % typ}; continue
+        if drive is None:
+            drive = _google.build("drive", "v3", [_google.DRIVE], subject=subject)
+        content = drive.files().export(fileId=spec.get("doc_id") or _doc_id_from(ref),
+                                       mimeType="text/markdown").execute()
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        out = cfg.ap(dest)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        changed = (not out.exists()) or out.read_bytes() != content
+        if changed:
+            out.write_bytes(content); refreshed += 1
+        synced += 1
+        lock[handle] = {"extract_to": dest, "sha": hashlib.sha1(content).hexdigest()[:12], "refreshed": changed}
+    cfg.ap("%s/inputs.lock.json" % cfg.build_dir).write_text(json.dumps(lock, indent=2), encoding="utf-8")
+    return "inputs: %d synced, %d refreshed (read-only)" % (synced, refreshed)
+
+
 def run_assemble(cfg, raw, pid):
     cfg.ap(cfg.build_dir).mkdir(parents=True, exist_ok=True)
     cfg.ap("%s/%s.context.md" % (cfg.build_dir, pid)).write_text(evidence_pack(cfg, raw, pid), encoding="utf-8")
@@ -470,7 +515,8 @@ def cmd_run(cfg, args):
     man = load_manifest(cfg)
     for raw, pid in _expand(cfg, stage, args[1] if len(args) > 1 else None):
         if STAGES[stage]["owner"] == "code":
-            msg = {"assemble": lambda: run_assemble(cfg, raw, pid),
+            msg = {"inputs": lambda: run_inputs(cfg),
+                   "assemble": lambda: run_assemble(cfg, raw, pid),
                    "lint": lambda: run_lint(cfg), "render": lambda: run_render(cfg)}[stage]()
             man[tid(stage, pid)] = {"inputs": current_inputs(cfg, stage, pid)}
             print("[code] %s — %s" % (tid(stage, pid), msg))

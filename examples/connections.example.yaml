@@ -29,3 +29,15 @@ notion:
 git:
   protected: [main, master]
   # co_author: "Claude <noreply@anthropic.com>"   # appended to `git save` commits
+
+# Input source documents this repo draws on. READ-ONLY: `bizconnect compose run inputs`
+# syncs each into its extract_to Markdown copy and never writes back to the source.
+# This is also a register of provenance (who/when/review) for those inputs.
+inputs: {}
+  # ofgem-strategy:
+  #   type: gdoc
+  #   url: https://docs.google.com/document/d/.../edit
+  #   extract_to: response/inputs/ofgem-strategy.md
+  #   prepared_by: Jane Doe <jane@example.com>
+  #   prepared_on: 2026-06-12
+  #   review: candidate          # candidate | reviewed | signed-off

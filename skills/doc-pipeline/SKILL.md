@@ -26,12 +26,19 @@ from inside the consuming repo (it finds `pipeline.yaml` by walking up from the 
 BC='python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose'
 python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose status        # FRESH/STALE/MISSING per target
 python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose graph         # the dependency model
+python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose run  inputs    # refresh external source docs (read-only)
 python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose scaffold      # create missing per-item local guides
 python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose run  <stage> <id|all>
 python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose accept <stage> <id|all>
 ```
 
-Stages: `assemble` (code) · `spec` `draft` `critique` `ladder` (llm) · `lint` `render` (code).
+Stages: `inputs` `assemble` (code) · `spec` `draft` `critique` `ladder` (llm) · `lint` `render` (code).
+
+`inputs` (code) refreshes local Markdown copies of external source documents declared in
+the repo's `connections.yaml` under `inputs:` (e.g. a Google Doc someone drafted). It is
+**read-only** — it pulls each source into its `extract_to` path and never writes back —
+and idempotent (only rewrites a copy that changed). Run it first so downstream steps build
+off fresh inputs.
 
 ## Producing one item (the happy path)
 

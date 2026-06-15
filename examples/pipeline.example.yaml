@@ -3,9 +3,13 @@
 # COMMITTED, NO secrets. Copy to your repo root as `pipeline.yaml`.
 # `compose` finds it by walking up from the cwd (like connections.yaml).
 #
-# The pipeline shape is fixed (corpus -> per-item evidence pack -> spec -> draft ->
-# critique -> ladder -> lint -> render). Everything project-specific lives in the files
+# The pipeline shape is fixed (inputs -> corpus -> per-item evidence pack -> spec -> draft
+# -> critique -> ladder -> lint -> render). Everything project-specific lives in the files
 # this config points at. Run `bizconnect compose graph` to see the resolved targets.
+#
+# The `inputs` stage is configured NOT here but in this repo's connections.yaml (`inputs:`):
+# it syncs external source docs (e.g. Google Docs) into local Markdown, read-only. Run it
+# with `bizconnect compose run inputs`.
 
 title: "# My document"            # heading used by `render`
 

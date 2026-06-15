@@ -14,8 +14,11 @@ store. Packaged as a Claude Code **plugin** (skills + CLI).
 /plugin install biz-connect@biz-connect
 ```
 
-After the next session start, five skills are available in every project:
-`gdoc-sync`, `notion-notes`, `sheet-io`, `git-flow`, `biz-connect-setup`.
+Or, from a clone, run the installer: `scripts/install.sh` (macOS/Linux) or
+`scripts\install.ps1` (Windows) — it does the two steps above and runs `doctor`.
+
+After the next session start, six skills are available in every project:
+`gdoc-sync`, `notion-notes`, `sheet-io`, `git-flow`, `doc-pipeline`, `biz-connect-setup`.
 
 **2. Set up credentials (once per user)** — never stored in any repo:
 
@@ -117,6 +120,10 @@ installed plugin), and dependency changes trigger an automatic venv re-install (
 launcher hashes `requirements.txt`). The check is throttled, fail-open, and never
 blocks a command; disable it with `BIZCONNECT_UPDATE_CHECK=off` in `secrets.env`.
 
+**Maintainers — cutting a release:** `scripts/release.sh <version>` (e.g. `0.2.0`) bumps
+`plugin.json`, commits, tags `vX.Y.Z`, and pushes. The version bump is what triggers
+everyone's update nudge, so bump it on every meaningful change.
+
 ## Connectors (today)
 
 | Service | Verbs | Notes |
@@ -125,9 +132,10 @@ blocks a command; disable it with `BIZCONNECT_UPDATE_CHECK=off` in `secrets.env`
 | `notion` | `whoami check read upload fill` | media upload + headless read; text via the Notion MCP |
 | `sheet` | `whoami check read write append clear create` | service-account Sheets r/w |
 | `git` | `status save sync pr` | branch-off-protected, co-author trailer, rebase-sync, PR |
+| `compose` | `status run accept scaffold graph` | config-driven document-composition pipeline (`pipeline.yaml`); its `inputs` stage syncs external source docs declared in `connections.yaml` |
 
-Plus `bizconnect doctor` / `init` / `version`. Skills (`/biz-connect:gdoc-sync`,
-`notion-notes`, `sheet-io`, `git-flow`, `biz-connect-setup`) wrap these for Claude.
+Plus `bizconnect doctor` / `init` / `update` / `version`. Skills (`/biz-connect:gdoc-sync`,
+`notion-notes`, `sheet-io`, `git-flow`, `doc-pipeline`, `biz-connect-setup`) wrap these for Claude.
 
 ### Google Docs ownership
 
