@@ -108,7 +108,10 @@ def cmd_list(argv):
         return 0
     w = max(len(r["slug"]) for r in rows)
     for r in rows:
-        print("  %-*s  %s" % (w, r["slug"], r["title"] or "(untitled)"))
+        # `title` doubles as the compose document H1, so it's stored with a leading "# ";
+        # strip it for a clean list display.
+        title = (r["title"] or "").lstrip("#").strip()
+        print("  %-*s  %s" % (w, r["slug"], title or "(untitled)"))
     return 0
 
 
@@ -130,9 +133,12 @@ def _scaffold(root: Path, slug: str, title: str):
     return base
 
 
-def _ensure_connections_stub(data, conn_path, slug, drive_folder=None):
+def _ensure_connections_stub(data, conn_path, slug, drive_folder=None, hub=None):
     """Make sure a deliverables.<slug> block exists so the binding is visible; `register init` /
-    `docreg init` fill in notion.register_db / notion.docs_registry (scoped) when run from the folder."""
+    `docreg init` fill in notion.register_db / notion.docs_registry (scoped) when run from the folder.
+    When a hub page is known, record it as each DB's `parent` so init creates the databases on the
+    RIGHT page even if `--parent` is omitted — otherwise init falls back to the top-level
+    notion.notes_page, which points at a different (the first) deliverable's hub."""
     from ruamel.yaml.comments import CommentedMap
     dl = data.get("deliverables")
     if not isinstance(dl, dict):
@@ -145,15 +151,32 @@ def _ensure_connections_stub(data, conn_path, slug, drive_folder=None):
         if not isinstance(g, dict):
             g = CommentedMap(); slot["google"] = g
         g["drive_folder"] = drive_folder
+    if hub:
+        n = slot.get("notion")
+        if not isinstance(n, dict):
+            n = CommentedMap(); slot["notion"] = n
+        for dbkey in ("register_db", "docs_registry"):
+            db = n.get(dbkey)
+            if not isinstance(db, dict):
+                db = CommentedMap(); n[dbkey] = db
+            db.setdefault("parent", hub)
     config.save_connections(data, conn_path)
+
+
+_MARKER_TEXT = "automated-document SUBMISSION"
 
 
 def _mark_hub(hub, slug, title, root):
     """Stamp the Notion hub page as a submission: a 📨 icon + a marker callout linking to the
-    getting-started + pipeline pages. Human-facing; the repo remains the source of truth."""
+    getting-started + pipeline pages. Human-facing; the repo remains the source of truth.
+    Idempotent: the icon PATCH is a no-op when already set, and the callout is skipped if the
+    page already carries one (so re-pointing --hub at a marked page doesn't stack duplicates)."""
     from . import notion
     pid = notion.norm_id(hub)
     notion.api("PATCH", "/pages/%s" % pid, body={"icon": {"type": "emoji", "emoji": "📨"}})
+    for b in notion.get_children(pid):
+        if b.get("type") == "callout" and _MARKER_TEXT in notion.plain_text(b):
+            return pid                       # already marked — don't append a second callout
     gs = "https://app.notion.com/p/380e4fd0813681038f32d267666c51c8"   # How to get started
     pp = "https://app.notion.com/p/380e4fd08136814eb928f894d0902263"   # How the pipeline works
     callout = {
@@ -187,7 +210,7 @@ def cmd_new(argv):
     drive_folder = _opt(argv, "--drive-folder")
 
     base = _scaffold(root, slug, title)
-    _ensure_connections_stub(data, conn_path, slug, drive_folder)
+    _ensure_connections_stub(data, conn_path, slug, drive_folder, hub)
     print("scaffolded %s" % base.relative_to(root).as_posix())
     print("  wrote pipeline.yaml (deliverable: %s) + response/ tree + connections.yaml deliverables.%s stub" % (slug, slug))
 
