@@ -40,6 +40,20 @@ notion:
   #   database_id:
   #   project_to: register/doc-versions.md  # optional local projection of the table
 
+# Shared, scoped credentials pulled from a secret manager into the per-user central
+# store (`bizconnect secrets pull`). The team holds ONE scoped Notion token + Google SA
+# key; access is granted by an IAM group and each person pulls with their OWN identity
+# (`gcloud auth application-default login`) — no key is handed around. IDs only here.
+# secrets:
+#   provider: gcp
+#   project: my-gcp-project-id          # or set $GOOGLE_CLOUD_PROJECT
+#   pull:
+#     - name: myrepo-notion-token       # Secret Manager secret id
+#       env: NOTION_TOKEN               # -> upsert KEY=value in secrets.env
+#     - name: myrepo-google-sa-key
+#       file: service-account.json      # -> write into the central store
+#       # version: latest               # optional (default: latest)
+
 git:
   protected: [main, master]
   # co_author: "Claude <noreply@anthropic.com>"   # appended to `git save` commits

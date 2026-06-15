@@ -205,7 +205,8 @@ def _resolve_local(arg):
 
 # --------------------------------------------------------------------- commands
 def cmd_push(argv):
-    arg = _positional(argv, value_flags=("--title", "--folder", "--version"))
+    arg = _positional(argv, value_flags=("--title", "--folder", "--version",
+                                         "--footnotes", "--footnote-kinds"))
     if not arg:
         sys.exit("push needs <file>")
     local = _resolve_local(arg)
@@ -293,6 +294,22 @@ def cmd_push(argv):
             print(f"  registry: {msg}")
     except Exception as e:
         print(f"  (doc registry not updated: {e})")
+
+    # Re-apply anchored footnotes (a push REPLACES the Doc body, wiping any prior footnotes).
+    # Idempotent: skips any ISS already footnoted. Keeps the open-issue annotations on every
+    # new revision, each still deep-linked to its Notion register row.
+    fnsrc = _opt(argv, "--footnotes")
+    if fnsrc:
+        try:
+            pts = json.loads(_resolve_local(fnsrc).read_text(encoding="utf-8"))
+            fk = _opt(argv, "--footnote-kinds")
+            if fk:
+                want = {k.strip().lower() for k in fk.split(",") if k.strip()}
+                pts = [p for p in pts if str(p.get("kind", "")).lower() in want]
+            print("  footnotes: " + _annotate_footnotes(data, doc_id, pts, _iss_url_map(data)))
+        except Exception as e:
+            st, detail = _google.http_error(e)
+            print(f"  (footnotes not applied [{st}]: {detail[:80]})")
 
 
 def cmd_pull(argv):
@@ -575,14 +592,167 @@ def _open_point_comment(p):
     return "\n".join(lines)
 
 
+# ------------------------------------------- footnotes (open points -> anchored footnotes)
+# Google's API cannot create text-ANCHORED comments on a Doc (the editor treats API-created
+# comment anchors as unanchored). Footnotes are the supported inline-anchored mechanism: a
+# superscript reference sits at the exact phrase, and the footnote text carries the open point
+# with its ISS id hyperlinked to the matching Notion register row. Needs the Docs API enabled.
+def _docs(data):
+    return _google.build("docs", "v1", [_google.DOCS],
+                         subject=_google.impersonation_subject(data))
+
+
+def _norm_for_match(s):
+    """Normalise smart punctuation 1:1 so anchor matching survives Markdown->Doc import
+    (curly quotes, en/em dashes). Length-preserving, so a char-index map stays aligned."""
+    return (s.replace("’", "'").replace("‘", "'")
+             .replace("“", '"').replace("”", '"')
+             .replace("—", "-").replace("–", "-").replace(" ", " "))
+
+
+def _flatten_doc_body(doc):
+    """(flat_text, index_map) over BODY paragraph text runs only — skips tables/headers so a
+    footnote reference is never placed somewhere the Docs API forbids. index_map[i] is the
+    document index of flat_text[i]."""
+    flat, idxmap = [], []
+    for el in doc.get("body", {}).get("content", []):
+        para = el.get("paragraph")
+        if not para:
+            continue
+        for pe in para.get("elements", []):
+            tr = pe.get("textRun")
+            start = pe.get("startIndex")
+            if not tr or start is None:
+                continue
+            for i, ch in enumerate(tr.get("content", "")):
+                flat.append(ch)
+                idxmap.append(start + i)
+    return "".join(flat), idxmap
+
+
+def _anchor_end_index(flat_norm, idxmap, anchor):
+    """Document index just AFTER the anchor phrase's first occurrence (where the footnote ref
+    goes), or None if not found. Case-insensitive (a drafter's anchor may lowercase a word the
+    prose capitalises at a sentence start); normalisation/lowercasing is length-preserving so
+    the char-index map stays aligned."""
+    a = _norm_for_match(anchor or "").strip()
+    if not a:
+        return None
+    hay, needle = flat_norm.lower(), a.lower()
+    pos = hay.find(needle)
+    if pos >= 0:
+        return idxmap[pos + len(a) - 1] + 1
+    import re as _re                              # fallback: collapse internal whitespace
+    a2 = _re.sub(r"\s+", " ", needle)
+    hay2 = _re.sub(r"\s+", " ", hay)
+    if a2 and a2 in hay2:
+        first = needle.split()[0]
+        p0 = hay.find(first)
+        if p0 >= 0:
+            return idxmap[min(p0 + len(a) - 1, len(idxmap) - 1)] + 1
+    return None
+
+
+def _iss_url_map(data):
+    """ISS id -> Notion register page URL, so a footnote can deep-link to its issue row."""
+    try:
+        from . import register
+        out = {}
+        for pg in register._query(data):
+            iss = register._row_get(pg, "ISS")
+            if iss:
+                out[iss] = pg.get("url", "")
+        return out
+    except Exception:
+        return {}
+
+
+def _annotate_footnotes(data, doc_id, points, iss_url):
+    """Place a footnote at each open point's anchor phrase. Footnote text = '<ISS> (<KIND>):
+    <note>', with <ISS> hyperlinked to its Notion row. Idempotent-ish: skips a point whose ISS
+    already appears in an existing footnote."""
+    docs = _docs(data)
+    doc = docs.documents().get(documentId=doc_id).execute()
+    # already-present ISS ids (avoid duplicating footnotes on re-run)
+    present = set()
+    for fid, seg in (doc.get("footnotes") or {}).items():
+        txt = "".join(pe.get("textRun", {}).get("content", "")
+                      for el in seg.get("content", []) for pe in el.get("paragraph", {}).get("elements", []))
+        present |= set(re.findall(r"\bISS-\d+\b", txt))
+    flat, idxmap = _flatten_doc_body(doc)
+    flat_norm = _norm_for_match(flat)
+    placed, missing, dup = [], [], 0
+    for p in points:
+        iss = p.get("iss") or ""
+        if iss and iss in present:
+            dup += 1
+            continue
+        end = _anchor_end_index(flat_norm, idxmap, p.get("anchor", ""))
+        if end is None:
+            missing.append(iss or p.get("src_id", "?"))
+            continue
+        placed.append((end, p))
+    placed.sort(key=lambda x: x[0], reverse=True)   # high->low so inserts don't shift pending indices
+
+    import time
+
+    def _bu(requests, tries=5):
+        """batchUpdate with backoff on the Docs write-per-minute quota (HTTP 429)."""
+        for attempt in range(tries):
+            try:
+                return docs.documents().batchUpdate(
+                    documentId=doc_id, body={"requests": requests}).execute()
+            except Exception as e:
+                st, _ = _google.http_error(e)
+                if str(st) == "429" and attempt < tries - 1:
+                    time.sleep(22)
+                    continue
+                raise
+
+    done = failed = 0
+    for end, p in placed:
+        iss = p.get("iss") or ""
+        kind = str(p.get("kind", "")).upper()
+        prefix = ("%s (%s): " % (iss, kind)) if iss else ("(%s): " % kind)
+        text = prefix + (p.get("note", "") or "")
+        try:
+            r = _bu([{"createFootnote": {"location": {"index": end}}}])
+            fnid = r["replies"][0]["createFootnote"]["footnoteId"]
+            reqs = [{"insertText": {"location": {"segmentId": fnid, "index": 1}, "text": text}}]
+            url = iss_url.get(iss)
+            if url and iss:
+                reqs.append({"updateTextStyle": {
+                    "range": {"segmentId": fnid, "startIndex": 1, "endIndex": 1 + len(iss)},
+                    "textStyle": {"link": {"url": url}}, "fields": "link"}})
+            _bu(reqs)
+            done += 1
+            time.sleep(0.7)                         # pace under the 60 writes/min quota
+        except Exception as e:
+            failed += 1
+            st, detail = _google.http_error(e)
+            print(f"  WARN footnote for {iss or p.get('src_id')} failed [{st}]: {detail[:100]}")
+    msg = f"{done} footnote(s) placed"
+    if dup:
+        msg += f", {dup} already present"
+    if missing:
+        msg += f", {len(missing)} anchor(s) not found ({', '.join(missing[:6])}{'…' if len(missing) > 6 else ''})"
+    if failed:
+        msg += f", {failed} failed"
+    return msg
+
+
 def cmd_annotate(argv):
-    """Post each harvested open point (from compose's <feedback>/harvest.json) as a comment on
-    the bound Doc. Idempotent: points already commented (matched by their [harvest:…] tag) are
-    skipped, so it is safe to re-run after every push."""
-    arg = _positional(argv, value_flags=("--from", "--kinds"))
+    """Surface harvested open points (compose's <feedback>/harvest.json) on the bound Doc.
+      --as comments  (default) one Drive comment per point (unanchored; quotes its text).
+      --as footnotes a footnote at each point's anchor phrase, text = '<ISS> (<KIND>): <note>'
+                     with the ISS hyperlinked to its Notion register row (needs the Docs API).
+    Optional: --kinds decision,reconcile to annotate only the substantive items. Idempotent:
+    comments skip by [harvest:…] tag; footnotes skip an ISS already present in a footnote."""
+    arg = _positional(argv, value_flags=("--from", "--kinds", "--as"))
     src = _opt(argv, "--from")
     if not arg or not src:
         sys.exit("annotate needs <file> --from <harvest.json>")
+    mode = (_opt(argv, "--as", "comments") or "comments").lower()  # comments | footnotes
     local = _resolve_local(arg)
     data, conn_path, root = _repo()
     key = _rel(local, root)
@@ -593,10 +763,16 @@ def cmd_annotate(argv):
     points = json.loads(_resolve_local(src).read_text(encoding="utf-8"))
     if not isinstance(points, list):
         sys.exit("harvest file must be a JSON list of open points")
-    kinds = _opt(argv, "--kinds")        # e.g. "decision,reconcile" — comment only the substantive items
+    kinds = _opt(argv, "--kinds")        # e.g. "decision,reconcile" — annotate only the substantive items
     if kinds:
         want = {k.strip().lower() for k in kinds.split(",") if k.strip()}
         points = [p for p in points if str(p.get("kind", "")).lower() in want]
+    if mode == "footnotes":
+        try:
+            print(f"annotated {key}: " + _annotate_footnotes(data, doc_id, points, _iss_url_map(data)))
+        except Exception as e:
+            _die_google(e, doc_id)
+        return
     drive = _drive(data)
     posted = set()
     try:

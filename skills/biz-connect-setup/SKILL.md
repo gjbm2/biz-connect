@@ -35,6 +35,23 @@ Start with `doctor`. It tells you exactly what's missing.
    (or point `GOOGLE_SERVICE_ACCOUNT_FILE` at it).
 4. `doctor` should go green.
 
+## Onboarding to a repo whose creds live in Secret Manager (no manual CLI)
+
+If the repo's `connections.yaml` has a `secrets:` block, the team's scoped credentials
+live in Google Secret Manager and **you (the agent) fetch them FOR the user** — they
+should not have to run CLIs. From the repo root:
+
+```bash
+python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" secrets pull
+python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" doctor
+```
+
+`secrets pull` signs the user in on first run (a browser window opens — the only human
+step), then writes the scoped `NOTION_TOKEN` + `service-account.json` into the central
+store. Prereqs: the Google Cloud SDK (`gcloud`) installed, and the user added to the
+repo's access group. A 403 from `secrets pull` means they aren't in that group yet (see
+the repo's `tooling/README.md`). `secrets status --check` verifies access without pulling.
+
 ## Google Docs ownership (the common gotcha)
 
 A service account has **no Drive storage of its own**, so it cannot *own* a newly
