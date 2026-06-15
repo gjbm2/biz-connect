@@ -17,7 +17,8 @@ from . import __version__, config
 SERVICES = {"gdoc": "gdocs", "gdocs": "gdocs", "notion": "notion",
             "sheet": "gsheets", "sheets": "gsheets", "gsheet": "gsheets", "git": "git",
             "compose": "compose", "register": "register", "docreg": "docreg",
-            "secrets": "secrets", "secret": "secrets"}
+            "secrets": "secrets", "secret": "secrets",
+            "deliverable": "deliverable", "deliverables": "deliverable"}
 
 USAGE = """biz-connect — business-service connectors for this repo.
 
@@ -31,6 +32,7 @@ USAGE = """biz-connect — business-service connectors for this repo.
   bizconnect sheet  whoami|check|read|write|append|clear|create
   bizconnect git    status|save|sync|pr                  standardised git flow
   bizconnect compose status|run|accept|scaffold|graph    config-driven doc-composition pipeline
+  bizconnect deliverable list|new <slug>  stand up / list deliverables in an umbrella repo
   bizconnect register init|pull|upsert|open|status|resolve|journal   Notion open-points register (review feedback)
   bizconnect docreg  init|log|list|pull   Notion catalogue of produced doc instances + versions
   bizconnect secrets pull|status          pull this repo's shared scoped creds (GCP Secret Manager) into the central store
@@ -90,9 +92,12 @@ def cmd_doctor():
         print(f"  google.share_with: {config.get_path(data, 'google.share_with') or '(unset)'}")
         print(f"  google.drive_folder: {config.get_path(data, 'google.drive_folder') or '(unset)'}")
         print(f"  notion.notes_page: {config.get_path(data, 'notion.notes_page') or '(unset)'}")
-        rdb = config.get_path(data, "notion.register_db") or {}
+        deliv = config.active_deliverable()
+        if deliv:
+            print(f"  active deliverable: {deliv}")
+        rdb = config.scoped(data, "notion.register_db") or {}
         print(f"  notion.register_db: {rdb.get('database_id') or '(unbound)'}")
-        ddb = config.get_path(data, "notion.docs_registry") or {}
+        ddb = config.scoped(data, "notion.docs_registry") or {}
         print(f"  notion.docs_registry: {ddb.get('database_id') or '(unbound)'}")
         sec = config.get_path(data, "secrets") or {}
         if sec:

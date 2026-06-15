@@ -97,7 +97,9 @@ def _rich(s, limit=1900):
 
 
 def _db(data):
-    rd = config.get_path(data, "notion.register_db") or {}
+    # Scope to the active deliverable (deliverables.<slug>.notion.register_db) when running
+    # inside one; falls back to top-level notion.register_db for single-deliverable repos.
+    rd = config.scoped(data, "notion.register_db") or {}
     return rd if isinstance(rd, dict) else {}
 
 
@@ -111,10 +113,11 @@ def _db_id(data):
 
 def _set_db(data, path, fields):
     from ruamel.yaml.comments import CommentedMap
-    n = data.get("notion")
+    container = config.scoped_parent(data, create=True)   # deliverables.<slug> if inside one, else top level
+    n = container.get("notion")
     if not isinstance(n, dict):
         n = CommentedMap()
-        data["notion"] = n
+        container["notion"] = n
     rd = n.get("register_db")
     if not isinstance(rd, CommentedMap):
         merged = CommentedMap()

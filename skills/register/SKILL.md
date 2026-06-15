@@ -14,6 +14,12 @@ deliberation brief, and the eventual source edit all reference it.
 Bound per-repo in `connections.yaml` under `notion.register_db` (`database_id`, `url`,
 `project_to`, `journal`). Credentials reuse the `notion` connector's token — nothing extra.
 
+> **Umbrella repos:** in a repo that hosts deliverables under `deliverables/<slug>/`, each
+> deliverable has its **own** register, bound under `deliverables.<slug>.notion.register_db`
+> (its `project_to`/`journal` are workspace-relative). Run `register` verbs from inside the
+> deliverable folder — the engine scopes to that deliverable's register automatically; ISS
+> sequences are per-register, so they never collide across deliverables.
+
 ## Verbs
 
 ```bash

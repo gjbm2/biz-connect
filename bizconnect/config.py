@@ -157,3 +157,93 @@ def get_path(data, dotted, default=None):
             return default
         cur = cur[part]
     return cur
+
+
+# ------------------------------------------------------- multi-deliverable scope
+# A repo can host several deliverables (e.g. one consultation response each) under
+# deliverables/<slug>/, each with its own pipeline.yaml. connections.yaml stays a single
+# umbrella file at the repo root; per-deliverable attachpoints live under a
+# `deliverables.<slug>:` block. The "active deliverable" is named by the nearest
+# pipeline.yaml's top-level `deliverable:` key, so running a command from inside a
+# deliverable directory scopes every binding to it. Repos with no `deliverable:` key and
+# no `deliverables:` block behave exactly as before (scoped() == get_path()).
+PIPELINE_NAME = "pipeline.yaml"
+
+
+def active_deliverable(start=None):
+    """The `deliverable:` slug from the nearest pipeline.yaml walking up from `start`
+    (default cwd), or None. None means 'not inside a layered deliverable' — callers then
+    fall back to top-level config, preserving single-deliverable behaviour."""
+    d = Path(start or os.getcwd()).resolve()
+    for cand in [d, *d.parents]:
+        f = cand / PIPELINE_NAME
+        if f.exists():
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    data = _yaml().load(fh) or {}
+            except Exception:
+                return None
+            return data.get("deliverable")
+    return None
+
+
+def scoped(data, dotted, deliverable=None, start=None):
+    """Resolve `dotted` preferring the active deliverable's scope, then the top level:
+    `deliverables.<deliverable>.<dotted>` if present, else `get_path(data, dotted)`.
+    `deliverable` defaults to active_deliverable(start). Backward-compatible — with no
+    active deliverable or no matching scoped key, this is exactly get_path()."""
+    if deliverable is None:
+        deliverable = active_deliverable(start)
+    if deliverable:
+        val = get_path(data, "deliverables.%s.%s" % (deliverable, dotted))
+        if val is not None:
+            return val
+    return get_path(data, dotted)
+
+
+def scoped_parent(data, deliverable=None, start=None, create=False):
+    """The mapping a top-level key (e.g. 'notion', 'google') should be read/written UNDER for the
+    active deliverable: data['deliverables'][slug] when one is active, else `data` itself. With
+    create=True, builds the deliverables.<slug> maps as needed — this is how `register init` /
+    `docreg init` write their binding into the right scope when run inside a deliverable."""
+    if deliverable is None:
+        deliverable = active_deliverable(start)
+    if not deliverable:
+        return data
+    from ruamel.yaml.comments import CommentedMap
+    dl = data.get("deliverables")
+    if not isinstance(dl, dict):
+        if not create:
+            return data
+        dl = CommentedMap(); data["deliverables"] = dl
+    slot = dl.get(deliverable)
+    if not isinstance(slot, dict):
+        if not create:
+            return data
+        slot = CommentedMap(); dl[deliverable] = slot
+    return slot
+
+
+def list_deliverables(start=None):
+    """Enumerate an umbrella repo's deliverables: scan <repo>/deliverables/*/pipeline.yaml and
+    read each one's `deliverable:` slug + `title:`. Returns [{slug, title, dir}] sorted by slug.
+    Empty for a single-deliverable repo (no deliverables/ dir) — callers then just use cwd."""
+    root = repo_root(start)
+    if not root:
+        return []
+    base = root / "deliverables"
+    if not base.is_dir():
+        return []
+    out = []
+    for d in sorted(p for p in base.iterdir() if p.is_dir()):
+        pf = d / PIPELINE_NAME
+        if not pf.exists():
+            continue
+        try:
+            with open(pf, encoding="utf-8") as fh:
+                pd = _yaml().load(fh) or {}
+        except Exception:
+            pd = {}
+        out.append({"slug": pd.get("deliverable") or d.name,
+                    "title": pd.get("title") or "", "dir": str(d)})
+    return out

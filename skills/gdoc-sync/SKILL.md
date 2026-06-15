@@ -30,6 +30,11 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc diff final/response.md
 Run from inside the repo (the tool finds `connections.yaml` by walking up from the
 cwd). Paths are repo-relative.
 
+> **Umbrella repos:** if the repo hosts deliverables under `deliverables/<slug>/`, run from
+> inside the deliverable folder. The Doc binding key is workspace-relative (e.g.
+> `deliverables/<slug>/final/response.md`), and `--new` Docs + the `docs_registry` log are
+> scoped to that deliverable's `deliverables.<slug>` block in `connections.yaml`.
+
 ## Workflow guidance
 
 - **Editing a submission/document:** edit the local `.md` with normal file tools,

@@ -106,6 +106,7 @@ class Cfg:
             self.d = _yaml().load(fh) or {}
         self.root = f.parent
         self.file = f
+        self._workspace_root = None
 
     def g(self, dotted, default=None):
         cur = self.d
@@ -115,8 +116,28 @@ class Cfg:
             cur = cur[p]
         return cur
 
+    @property
+    def deliverable(self):
+        """The deliverable slug this pipeline belongs to (top-level `deliverable:` key),
+        or None for a single-deliverable repo. Used to scope connections.yaml lookups."""
+        return self.d.get("deliverable")
+
+    @property
+    def workspace_root(self):
+        """The umbrella/workspace root: the nearest dir containing connections.yaml at or
+        above this deliverable's root (falls back to self.root). Umbrella-shared paths
+        written as `//foo` in pipeline.yaml resolve from here, depth-independently."""
+        if self._workspace_root is None:
+            from .. import config as _conn
+            f = _conn.find_connections(start=self.root)
+            self._workspace_root = f.parent if f else self.root
+        return self._workspace_root
+
     # path helpers -----------------------------------------------------------
     def ap(self, rel):
+        rel = str(rel)
+        if rel.startswith("//"):                 # umbrella-shared: resolve from workspace root
+            return self.workspace_root / rel[2:]
         return (self.root / rel)
 
     def relkey(self, p):
@@ -449,7 +470,7 @@ def run_inputs(cfg):
     from .. import config as _conn, _google
     from .gdocs import _doc_id_from
     data, _p = _conn.load_connections(start=cfg.root)
-    inputs = (data or {}).get("inputs") or {}
+    inputs = _conn.scoped(data, "inputs", deliverable=cfg.deliverable, start=cfg.root) or {}
     cfg.ap(cfg.build_dir).mkdir(parents=True, exist_ok=True)
     if not inputs:
         cfg.ap("%s/inputs.lock.json" % cfg.build_dir).write_text("{}", encoding="utf-8")
