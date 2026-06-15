@@ -15,7 +15,8 @@ edits and `push` refuses to overwrite Doc-side edits — pass `--force` to overr
 
 Verbs
 -----
-  push  <file> [--title T] [--folder ID] [--force]   create-or-update the Doc from local Markdown
+  push  <file> [--title T] [--folder ID] [--version V] [--new] [--force]   create/update the Doc
+                                                     (--new = a NEW Doc instance for a major build)
   pull  <file> [--force]                              overwrite local Markdown from the Doc
   link  <file> <doc-url-or-id>                        bind an existing Doc to a local file
   status [file]                                       show drift (local vs last sync, + Doc mod time)
@@ -87,6 +88,16 @@ def _modified(drive, doc_id):
                                  supportsAllDrives=True).execute().get("modifiedTime")
     except Exception:
         return None
+
+
+def _git_sha(root):
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
 
 
 # --------------------------------------------------------- repo binding + state
@@ -194,12 +205,14 @@ def _resolve_local(arg):
 
 # --------------------------------------------------------------------- commands
 def cmd_push(argv):
-    arg = _positional(argv, value_flags=("--title", "--folder"))
+    arg = _positional(argv, value_flags=("--title", "--folder", "--version"))
     if not arg:
         sys.exit("push needs <file>")
     local = _resolve_local(arg)
     title = _opt(argv, "--title")
     folder_override = _opt(argv, "--folder")
+    version = _opt(argv, "--version")
+    new = "--new" in argv          # force a NEW Doc instance (don't update in place)
     force = "--force" in argv
     if not local.exists():
         sys.exit(f"local file not found: {local}")
@@ -218,7 +231,7 @@ def cmd_push(argv):
     st = state.get("docs", {}).get(key, {})
 
     try:
-        if doc_id:
+        if doc_id and not new:
             # guard: don't clobber edits made to the Doc since we last synced it
             if not force and st.get("synced_modified"):
                 current = _modified(drive, doc_id)
@@ -234,7 +247,10 @@ def cmd_push(argv):
             action = "updated"
         else:
             folder = _folder_id(folder_override) or _folder_id(config.get_path(data, "google.drive_folder"))
-            body = {"name": title or local.stem, "mimeType": DOC_MIME}
+            name = title or local.stem
+            if version:
+                name = f"{name} — {version}"
+            body = {"name": name, "mimeType": DOC_MIME}
             if folder:
                 body["parents"] = [folder]
             f = drive.files().create(
@@ -256,6 +272,7 @@ def cmd_push(argv):
     # and `status` don't see a phantom "doc changed" on the very next call.
     state.setdefault("docs", {})[key] = {
         **st, "doc_id": doc_id,
+        "version": version or st.get("version"),
         "last_push_sha256": _content_sha(md),
         "last_push_at": _now(),
         "synced_modified": _modified(drive, doc_id) or f.get("modifiedTime"),
@@ -265,6 +282,17 @@ def cmd_push(argv):
     print(f"  {url}")
     if action == "created":
         print(f"  (binding written to {conn_path.name})")
+    # Record this instance in the doc registry (no-op if none bound). A freshly created Doc
+    # (first push or --new) is a NEW instance; an update just refreshes the current row.
+    try:
+        from . import docreg
+        msg = docreg.log_instance(data, root, artifact=key, doc_id=doc_id, doc_url=url,
+                                  version=version, content_sha=_content_sha(md),
+                                  git_sha=_git_sha(root), new=(action == "created"))
+        if msg:
+            print(f"  registry: {msg}")
+    except Exception as e:
+        print(f"  (doc registry not updated: {e})")
 
 
 def cmd_pull(argv):

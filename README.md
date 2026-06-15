@@ -190,6 +190,7 @@ everyone's update nudge, so bump it on every meaningful change.
 | `git` | `status save sync pr` | branch-off-protected, co-author trailer, rebase-sync, PR |
 | `compose` | `status run accept scaffold graph` | config-driven document-composition pipeline (`pipeline.yaml`); `inputs` syncs external sources; `assimilate`/`digest` close the feedback loop |
 | `register` | `init pull upsert open status resolve journal` | Notion-DB open-points register for review feedback (the feedback roundtrip's spine) |
+| `docreg` | `init log list pull` | Notion catalogue of produced Doc instances/versions; `gdoc push --new --version` logs each major build |
 
 Plus `bizconnect doctor` / `init` / `update` / `version`. Skills (`/biz-connect:gdoc-sync`,
 `notion-notes`, `sheet-io`, `git-flow`, `doc-pipeline`, `feedback-ingest`, `register`,
@@ -282,7 +283,7 @@ bizconnect/
   config.py        central store + connections.yaml resolution
   cli.py           `bizconnect <service> <verb>` dispatch + doctor/init
   _google.py       shared service-account auth (+ optional impersonation)
-  connectors/      gdocs.py  notion.py  gsheets.py  git.py  compose.py  register.py
+  connectors/      gdocs.py  notion.py  gsheets.py  git.py  compose.py  register.py  docreg.py
 scripts/bizconnect.py   self-bootstrapping launcher (creates the central-store venv)
 skills/                 plugin skills (one dir per affordance)
 examples/connections.example.yaml

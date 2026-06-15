@@ -32,6 +32,13 @@ notion:
   #   database_id:
   #   project_to: register/open-points.md   # local read-only projection the pipeline reads
   #   journal: register/journal             # per-cycle ingestion journal (audit trail)
+  # Document registry — one row per produced Doc instance/version. `gdoc push --new --version
+  # vX.Y` creates a new Doc instance for a major build and logs a row here (plain pushes refresh
+  # the current row). Created + bound by `bizconnect docreg init`.
+  # docs_registry:
+  #   url:
+  #   database_id:
+  #   project_to: register/doc-versions.md  # optional local projection of the table
 
 git:
   protected: [main, master]
