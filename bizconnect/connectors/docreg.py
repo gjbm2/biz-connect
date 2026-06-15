@@ -58,7 +58,9 @@ def _rich(s, limit=1900):
 
 
 def _db(data):
-    rd = config.get_path(data, "notion.docs_registry") or {}
+    # Scope to the active deliverable (deliverables.<slug>.notion.docs_registry) when running
+    # inside one; falls back to top-level notion.docs_registry for single-deliverable repos.
+    rd = config.scoped(data, "notion.docs_registry") or {}
     return rd if isinstance(rd, dict) else {}
 
 

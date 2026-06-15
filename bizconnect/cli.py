@@ -90,9 +90,12 @@ def cmd_doctor():
         print(f"  google.share_with: {config.get_path(data, 'google.share_with') or '(unset)'}")
         print(f"  google.drive_folder: {config.get_path(data, 'google.drive_folder') or '(unset)'}")
         print(f"  notion.notes_page: {config.get_path(data, 'notion.notes_page') or '(unset)'}")
-        rdb = config.get_path(data, "notion.register_db") or {}
+        deliv = config.active_deliverable()
+        if deliv:
+            print(f"  active deliverable: {deliv}")
+        rdb = config.scoped(data, "notion.register_db") or {}
         print(f"  notion.register_db: {rdb.get('database_id') or '(unbound)'}")
-        ddb = config.get_path(data, "notion.docs_registry") or {}
+        ddb = config.scoped(data, "notion.docs_registry") or {}
         print(f"  notion.docs_registry: {ddb.get('database_id') or '(unbound)'}")
         sec = config.get_path(data, "secrets") or {}
         if sec:

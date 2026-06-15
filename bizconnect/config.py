@@ -157,3 +157,45 @@ def get_path(data, dotted, default=None):
             return default
         cur = cur[part]
     return cur
+
+
+# ------------------------------------------------------- multi-deliverable scope
+# A repo can host several deliverables (e.g. one consultation response each) under
+# deliverables/<slug>/, each with its own pipeline.yaml. connections.yaml stays a single
+# umbrella file at the repo root; per-deliverable attachpoints live under a
+# `deliverables.<slug>:` block. The "active deliverable" is named by the nearest
+# pipeline.yaml's top-level `deliverable:` key, so running a command from inside a
+# deliverable directory scopes every binding to it. Repos with no `deliverable:` key and
+# no `deliverables:` block behave exactly as before (scoped() == get_path()).
+PIPELINE_NAME = "pipeline.yaml"
+
+
+def active_deliverable(start=None):
+    """The `deliverable:` slug from the nearest pipeline.yaml walking up from `start`
+    (default cwd), or None. None means 'not inside a layered deliverable' — callers then
+    fall back to top-level config, preserving single-deliverable behaviour."""
+    d = Path(start or os.getcwd()).resolve()
+    for cand in [d, *d.parents]:
+        f = cand / PIPELINE_NAME
+        if f.exists():
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    data = _yaml().load(fh) or {}
+            except Exception:
+                return None
+            return data.get("deliverable")
+    return None
+
+
+def scoped(data, dotted, deliverable=None, start=None):
+    """Resolve `dotted` preferring the active deliverable's scope, then the top level:
+    `deliverables.<deliverable>.<dotted>` if present, else `get_path(data, dotted)`.
+    `deliverable` defaults to active_deliverable(start). Backward-compatible — with no
+    active deliverable or no matching scoped key, this is exactly get_path()."""
+    if deliverable is None:
+        deliverable = active_deliverable(start)
+    if deliverable:
+        val = get_path(data, "deliverables.%s.%s" % (deliverable, dotted))
+        if val is not None:
+            return val
+    return get_path(data, dotted)

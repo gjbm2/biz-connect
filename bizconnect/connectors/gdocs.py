@@ -247,7 +247,7 @@ def cmd_push(argv):
                 supportsAllDrives=True).execute()
             action = "updated"
         else:
-            folder = _folder_id(folder_override) or _folder_id(config.get_path(data, "google.drive_folder"))
+            folder = _folder_id(folder_override) or _folder_id(config.scoped(data, "google.drive_folder"))
             name = title or local.stem
             if version:
                 name = f"{name} — {version}"
