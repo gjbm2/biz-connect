@@ -25,6 +25,13 @@ notion:
   notes_page:
   # Optional named databases, e.g. tasks: <db-id>
   # databases: {}
+  # Open-points register for review feedback (the feedback-ingest loop). Created + bound by
+  # `bizconnect register init`; the ingestion pass upserts rows here.
+  # register_db:
+  #   url:
+  #   database_id:
+  #   project_to: register/open-points.md   # local read-only projection the pipeline reads
+  #   journal: register/journal             # per-cycle ingestion journal (audit trail)
 
 git:
   protected: [main, master]

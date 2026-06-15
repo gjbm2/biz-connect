@@ -32,7 +32,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose run  <stage> <id|al
 python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose accept <stage> <id|all>
 ```
 
-Stages: `inputs` `assemble` (code) · `spec` `draft` `critique` `ladder` (llm) · `lint` `render` (code).
+Stages: `inputs` `assemble` (code) · `spec` `draft` `critique` `ladder` `assimilate` `digest` (llm) · `lint` `render` (code).
 
 `inputs` (code) refreshes local Markdown copies of external source documents declared in
 the repo's `connections.yaml` under `inputs:` (e.g. a Google Doc someone drafted). It is
@@ -52,8 +52,10 @@ For an item id (e.g. `Q7`):
    `build/Q07.draft.gen.md` → promote into `answers/Q07.md`. Then **`compose accept draft Q7`**.
 3. **`compose run critique Q7`** → `build/Q07.critique.prompt.md`. You produce the review →
    `build/Q07.critique.gen.md`; revise `answers/Q07.md` if needed.
-4. When several answers are ready: **`compose run ladder`** (front matter), **`compose run
-   lint`** (completeness/provenance), **`compose run render`** (the assembled document).
+4. When several answers are ready: **`compose run ladder`** — front matter (cover · intro ·
+   position · executive summary), distilled from the answers. It follows the repo's
+   `front_matter_template` (`{{TEMPLATE}}`) and weaves in `intro` (`{{INTRO}}`). Then
+   **`compose run lint`** (completeness/provenance) and **`compose run render`** (assembled doc).
 
 You execute the llm steps either inline (you, now) or by fanning out one agent per item
 across many ids — the prompt files the tool writes are the same either way.
@@ -66,10 +68,32 @@ Editing the global guide marks every spec/draft stale (it's a shared input). Edi
 answer marks `ladder`/`lint`/`render` stale. Rebuild exactly the targets you name; there is
 no "rebuild all".
 
+## Feedback roundtrip (assimilate · digest)
+
+Two llm stages close the loop from a reviewed document back into the pipeline (full playbook:
+the **feedback-ingest** skill):
+
+- **`assimilate`** — a high-reasoning pass over captured reviewer feedback (`gdoc comments` +
+  `gdoc diff` → `<feedback_dir>/feedback.bundle.md`). It lifts each comment into a triaged
+  **open point** — by *disposition* (finesse / tonal / rethink / research / discussion) and
+  *layer* (answer / spec / house-position / prompt) — and emits register deltas. Persist them
+  with `register upsert` (the **register** skill).
+- **`digest`** — reduces the open *gated* points into a deliberation brief for the team.
+
+The register feeds back into generation: `spec`/`draft`/`critique` (and `ladder`, for points
+routed to `front-matter`) inject the open points via `{{OPEN_POINTS}}`, so the next turn is
+made *with respect to* them, and `lint`
+cross-checks every `[…: ISS-nnn …]` marker against the register. Bind the register and its
+paths in `pipeline.yaml` (`register`, `brief`, `feedback_dir`) and `connections.yaml`
+(`notion.register_db`).
+
 ## Setup
 
 The repo needs a `pipeline.yaml` (see `examples/pipeline.example.yaml` in the plugin) and
 the files it points at: a global guide, a `prompts/` dir with `spec.md`/`draft.md`/
-`critique.md`/`ladder.md` (using the `{{GLOBAL_CONTEXT}}`, `{{ITEM_TEXT}}`, `{{EVIDENCE}}`,
-`{{LOCAL_CONTEXT}}`, `{{OUTPUT}}`, `{{ALL_OUTPUTS}}` placeholders), and an items JSON
-(optionally a structured corpus index). `compose scaffold` seeds the per-item local guides.
+`critique.md`/`ladder.md` (and, for the feedback loop, `assimilate.md`/`digest.md`) using the
+`{{GLOBAL_CONTEXT}}`, `{{ITEM_TEXT}}`, `{{EVIDENCE}}`, `{{LOCAL_CONTEXT}}`, `{{OUTPUT}}`,
+`{{ALL_OUTPUTS}}`, `{{INTRO}}`, `{{TEMPLATE}}`, `{{OPEN_POINTS}}`, `{{FEEDBACK}}`, `{{REGISTER}}`
+placeholders, and an items JSON (optionally a structured corpus index). For richer front
+matter, also set `paths.intro` and `paths.front_matter_template`. `compose scaffold` seeds the
+per-item local guides.

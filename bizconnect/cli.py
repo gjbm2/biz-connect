@@ -16,7 +16,7 @@ from . import __version__, config
 
 SERVICES = {"gdoc": "gdocs", "gdocs": "gdocs", "notion": "notion",
             "sheet": "gsheets", "sheets": "gsheets", "gsheet": "gsheets", "git": "git",
-            "compose": "compose"}
+            "compose": "compose", "register": "register"}
 
 USAGE = """biz-connect — business-service connectors for this repo.
 
@@ -25,11 +25,12 @@ USAGE = """biz-connect — business-service connectors for this repo.
   bizconnect update                 check for a newer plugin version (and how to apply it)
   bizconnect version
 
-  bizconnect gdoc   push|pull|status|link|unlink|list   sync local Markdown <-> Google Docs
+  bizconnect gdoc   push|pull|status|link|unlink|list|comments|diff|resolve   Markdown <-> Google Docs (+ feedback capture)
   bizconnect notion whoami|check|read|upload|fill        read pages, upload local media
   bizconnect sheet  whoami|check|read|write|append|clear|create
   bizconnect git    status|save|sync|pr                  standardised git flow
   bizconnect compose status|run|accept|scaffold|graph    config-driven doc-composition pipeline
+  bizconnect register init|pull|upsert|open|status|resolve|journal   Notion open-points register (review feedback)
 
 Bindings (which Doc/page this repo uses) live in ./connections.yaml.
 The doc pipeline is configured by ./pipeline.yaml (see examples/pipeline.example.yaml).
@@ -86,6 +87,8 @@ def cmd_doctor():
         print(f"  google.share_with: {config.get_path(data, 'google.share_with') or '(unset)'}")
         print(f"  google.drive_folder: {config.get_path(data, 'google.drive_folder') or '(unset)'}")
         print(f"  notion.notes_page: {config.get_path(data, 'notion.notes_page') or '(unset)'}")
+        rdb = config.get_path(data, "notion.register_db") or {}
+        print(f"  notion.register_db: {rdb.get('database_id') or '(unbound)'}")
         print(f"  bound docs: {len(docs)}")
     else:
         print("connections.yaml: not found in this directory tree (run `bizconnect init`).")

@@ -15,7 +15,7 @@ Targets (per-item targets are parameterised over the items in your `pipeline.yam
     spec:<id>       (llm)  the item's argument guide    -> <local_dir>/<id>.md   (human-owned)
     draft:<id>      (llm)  the item's answer            -> <answers_dir>/<id>.md (human-owned)
     critique:<id>   (llm)  adversarial review           -> <build>/<id>.critique.gen.md
-    ladder          (llm)  front matter over answers    -> <submission>          (human-owned)
+    ladder          (llm)  front matter: template+intro over answers -> <submission> (human-owned)
     lint            (code) completeness / provenance    -> <build>/lint-report.md
     render          (code) assembled document           -> <final>
 
@@ -54,6 +54,8 @@ STAGES = {
     "ladder":   {"owner": "llm",  "per_item": False},
     "lint":     {"owner": "code", "per_item": False},
     "render":   {"owner": "code", "per_item": False},
+    "assimilate": {"owner": "llm", "per_item": False},
+    "digest":   {"owner": "llm",  "per_item": False},
 }
 
 
@@ -162,24 +164,35 @@ def inputs_for(cfg, stage, pid=None):
     B = cfg.build_dir
     idx = cfg.g("index.source")
     items_src = cfg.g("items.source")
+    R = cfg.loc("register")
+    reg = [R] if R else []
+    FB = "%s/feedback.bundle.md" % cfg.loc("feedback_dir", "%s/feedback" % B)
     if stage == "inputs":
         c = "connections.yaml"
         return [c] if (cfg.root / c).exists() else []
     if stage == "assemble":
         return [G, "%s/%s.md" % (L, pid)] + ([idx] if idx else []) + [items_src]
     if stage == "spec":
-        return ["%s/spec.md" % P, G, items_src] + ([idx] if idx else []) + ["%s/%s.context.md" % (B, pid)]
+        return ["%s/spec.md" % P, G, items_src] + ([idx] if idx else []) + ["%s/%s.context.md" % (B, pid)] + reg
     if stage == "draft":
-        return ["%s/draft.md" % P, G, "%s/%s.md" % (L, pid), "%s/%s.context.md" % (B, pid)]
+        return ["%s/draft.md" % P, G, "%s/%s.md" % (L, pid), "%s/%s.context.md" % (B, pid)] + reg
     if stage == "critique":
-        return ["%s/critique.md" % P, G, "%s/%s.md" % (L, pid), "%s/%s.md" % (A, pid)]
+        return ["%s/critique.md" % P, G, "%s/%s.md" % (L, pid), "%s/%s.md" % (A, pid)] + reg
     if stage == "ladder":
-        return ["%s/ladder.md" % P, G] + cfg.globrel(A)
+        intro = cfg.loc("intro")
+        fmt = cfg.loc("front_matter_template")
+        extra = ([intro] if intro else []) + ([fmt] if fmt else [])
+        return ["%s/ladder.md" % P, G] + extra + cfg.globrel(A) + reg
     if stage == "lint":
-        return cfg.globrel(A) + cfg.globrel(L) + ([idx] if idx else []) + [items_src, G]
+        return cfg.globrel(A) + cfg.globrel(L) + ([idx] if idx else []) + [items_src, G] + reg
     if stage == "render":
         sub = cfg.loc("submission")
         return cfg.globrel(A) + ([sub] if sub else [])
+    if stage == "assimilate":
+        return (["%s/assimilate.md" % P, G, FB] + cfg.globrel(A) + cfg.globrel(L)
+                + ["%s/draft.md" % P, "%s/spec.md" % P, items_src] + reg)
+    if stage == "digest":
+        return ["%s/digest.md" % P, G] + reg
     return []
 
 
@@ -187,6 +200,7 @@ def output_for(cfg, stage, pid=None):
     L = cfg.loc("local_dir", "context/items")
     A = cfg.loc("answers_dir", "answers")
     B = cfg.build_dir
+    FB = cfg.loc("feedback_dir", "%s/feedback" % B)
     return {
         "inputs":   "%s/inputs.lock.json" % B,
         "assemble": "%s/%s.context.md" % (B, pid),
@@ -196,6 +210,8 @@ def output_for(cfg, stage, pid=None):
         "ladder":   cfg.loc("submission", "%s/submission.md" % B),
         "lint":     "%s/lint-report.md" % B,
         "render":   cfg.loc("final", "final/document.md"),
+        "assimilate": "%s/cycle.gen.md" % FB,
+        "digest":   cfg.loc("brief", "%s/brief.gen.md" % FB),
     }[stage]
 
 
@@ -203,14 +219,17 @@ def canonical_for(cfg, stage, pid=None):
     L = cfg.loc("local_dir", "context/items")
     A = cfg.loc("answers_dir", "answers")
     return {"spec": "%s/%s.md" % (L, pid), "draft": "%s/%s.md" % (A, pid),
-            "ladder": cfg.loc("submission")}.get(stage)
+            "ladder": cfg.loc("submission"), "digest": cfg.loc("brief")}.get(stage)
 
 
 def gen_for(cfg, stage, pid=None):
     B = cfg.build_dir
+    FB = cfg.loc("feedback_dir", "%s/feedback" % B)
     return {"spec": "%s/%s.spec.gen.md" % (B, pid), "draft": "%s/%s.draft.gen.md" % (B, pid),
             "critique": "%s/%s.critique.gen.md" % (B, pid),
-            "ladder": "%s/submission.gen.md" % B}.get(stage)
+            "ladder": "%s/submission.gen.md" % B,
+            "assimilate": "%s/cycle.gen.md" % FB,
+            "digest": "%s/brief.gen.md" % FB}.get(stage)
 
 
 def tid(stage, pid=None):
@@ -321,10 +340,40 @@ def _fill(text, mapping):
     return text
 
 
+def _open_points(cfg, match, label):
+    """OPEN points (not resolved/closed) whose `questions:` line satisfies `match`,
+    sliced from the register projection — what the next turn must address."""
+    reg = cfg.loc("register")
+    txt = cfg.read(reg) if reg else None
+    if not txt:
+        return "(no open points — none captured yet)"
+    if "<!-- BEGIN REGISTER" in txt and "<!-- END REGISTER -->" in txt:
+        txt = txt.split("<!-- BEGIN REGISTER", 1)[1].split("<!-- END REGISTER -->", 1)[0]
+    OPEN = ("open", "triaged", "in-discussion", "agreed", "actioned")
+    out = []
+    for part in re.split(r"(?m)^### ", txt)[1:]:
+        block = "### " + part.strip()
+        mq = re.search(r"questions:.*", block)
+        if mq and not match(mq.group(0)):
+            continue
+        ms = re.search(r"status:\s*([\w-]+)", block)
+        if ms and ms.group(1) not in OPEN:
+            continue
+        out.append(block)
+    return "\n\n".join(out) if out else "(no open points for %s)" % label
+
+
+def open_points_for(cfg, raw, pid):
+    """Per-item open points — what the next spec/draft/critique turn must address."""
+    toks = [raw] + ([pid] if pid else [])
+    return _open_points(cfg, lambda q: any(t in q for t in toks), raw)
+
+
 def assemble_prompt(cfg, stage, raw, pid):
     tmpl = cfg.read("%s/%s.md" % (cfg.loc("prompts_dir", "prompts"), stage)) or ""
     L = cfg.loc("local_dir", "context/items")
     A = cfg.loc("answers_dir", "answers")
+    P = cfg.loc("prompts_dir", "prompts")
     B = cfg.build_dir
     m = {"GLOBAL_CONTEXT": cfg.read(cfg.loc("global_context", "")) or ""}
     if pid:
@@ -337,6 +386,24 @@ def assemble_prompt(cfg, stage, raw, pid):
     if stage == "ladder":
         answers = cfg.globrel(A)
         m["ALL_OUTPUTS"] = "\n\n---\n\n".join(cfg.read(a) or "" for a in answers) or "(no answers yet)"
+        intro = cfg.loc("intro")
+        m["INTRO"] = (cfg.read(intro) if intro else None) or "(no intro material configured)"
+        fmt = cfg.loc("front_matter_template")
+        m["TEMPLATE"] = (cfg.read(fmt) if fmt else None) or "(no front-matter template configured)"
+        m["OPEN_POINTS"] = _open_points(cfg, lambda q: "front-matter" in q, "front-matter")
+    if stage in ("spec", "draft", "critique"):
+        m["OPEN_POINTS"] = open_points_for(cfg, raw, pid)
+    if stage == "assimilate":
+        FB = cfg.loc("feedback_dir", "%s/feedback" % B)
+        m["FEEDBACK"] = (cfg.read("%s/feedback.bundle.md" % FB)
+                         or "(no feedback bundle — capture it with `gdoc comments`/`gdoc diff` first)")
+        m["ANSWERS"] = "\n\n---\n\n".join(cfg.read(a) or "" for a in cfg.globrel(A)) or "(no answers yet)"
+        m["SPECS"] = "\n\n---\n\n".join(cfg.read(s) or "" for s in cfg.globrel(L)) or "(no specs yet)"
+        m["PROMPTS"] = "### draft.md\n%s\n\n### spec.md\n%s" % (
+            cfg.read("%s/draft.md" % P) or "", cfg.read("%s/spec.md" % P) or "")
+        m["REGISTER"] = cfg.read(cfg.loc("register", "")) or "(register empty)"
+    if stage == "digest":
+        m["REGISTER"] = cfg.read(cfg.loc("register", "")) or "(register empty)"
     return _fill(tmpl, m)
 
 
@@ -412,6 +479,25 @@ def run_lint(cfg):
             if prov and prov not in ans:
                 body.append("- ⚠ no `%s…` provenance citations" % prov); problems += 1
             body.append("- %d words" % len(ans.split()))
+        body.append("")
+    reg = cfg.loc("register")
+    regtxt = cfg.read(reg) if reg else None
+    if regtxt:
+        gen = regtxt
+        if "<!-- BEGIN REGISTER" in regtxt and "<!-- END REGISTER -->" in regtxt:
+            gen = regtxt.split("<!-- BEGIN REGISTER", 1)[1].split("<!-- END REGISTER -->", 1)[0]
+        reg_ids = set(re.findall(r"\bISS-\d+\b", gen))
+        intext = set()
+        for it in load_items(cfg):
+            for f in ("%s/%s.md" % (A, it["pad"]), "%s/%s.md" % (L, it["pad"])):
+                intext |= set(re.findall(r"\bISS-\d+\b", cfg.read(f) or ""))
+        body.append("## register <-> markers")
+        for i in sorted(reg_ids - intext):
+            body.append("- %s open in register but no in-text marker" % i); problems += 1
+        for i in sorted(intext - reg_ids):
+            body.append("- marker %s in text but not in register" % i); problems += 1
+        if reg_ids and reg_ids == intext:
+            body.append("- in sync (%d id(s))" % len(reg_ids))
         body.append("")
     sub = cfg.loc("submission")
     if sub:

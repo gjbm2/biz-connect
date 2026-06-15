@@ -4,8 +4,9 @@
 # `compose` finds it by walking up from the cwd (like connections.yaml).
 #
 # The pipeline shape is fixed (inputs -> corpus -> per-item evidence pack -> spec -> draft
-# -> critique -> ladder -> lint -> render). Everything project-specific lives in the files
-# this config points at. Run `bizconnect compose graph` to see the resolved targets.
+# -> critique -> ladder -> lint -> render); two further llm stages (assimilate, digest) close
+# the feedback loop from a reviewed document (see the feedback-ingest skill). Everything
+# project-specific lives in the files this config points at. Run `bizconnect compose graph`.
 #
 # The `inputs` stage is configured NOT here but in this repo's connections.yaml (`inputs:`):
 # it syncs external source docs (e.g. Google Docs) into local Markdown, read-only. Run it
@@ -32,8 +33,14 @@ paths:
   prompts_dir: prompts                        # llm step templates: spec.md draft.md critique.md ladder.md
   answers_dir: answers                        # per-item answers: <id>.md  (human-owned)
   submission: submission/front-matter.md      # laddered-up front matter (human-owned; optional)
+  intro: about.md                             # OPTIONAL: intro material injected into `ladder` as {{INTRO}}
+  front_matter_template: submission/front-matter-template.md  # OPTIONAL: skeleton `ladder` follows as {{TEMPLATE}}
   build_dir: build                            # scratch: evidence packs, prompts, gen drafts, manifest
   final: final/document.md                    # render output
+  # --- feedback roundtrip (optional; see the feedback-ingest skill) ---
+  register: register/open-points.md           # local projection of the Notion open-points register
+  brief: register/brief.md                    # digest's deliberation view (push to the review Doc)
+  feedback_dir: build/feedback                # assimilate/digest scratch + feedback.bundle.md
 
 # lint: unresolved markers to flag in answers, and a provenance token each answer should contain
 markers: ["[VERIFY", "[DECISION", "[RECONCILE"]
@@ -47,3 +54,8 @@ provenance: "(src:"
 #   {{LOCAL_CONTEXT}}   the item's local guide      (draft, critique)
 #   {{OUTPUT}}          the item's current answer   (critique)
 #   {{ALL_OUTPUTS}}     all answers concatenated    (ladder)
+#   {{INTRO}}           intro material (paths.intro) (ladder)
+#   {{TEMPLATE}}        front-matter skeleton        (ladder)
+#   {{OPEN_POINTS}}     open register points slice   (spec, draft, critique, ladder)
+#   {{FEEDBACK}}        captured reviewer feedback   (assimilate)
+#   {{REGISTER}}        the open-points register     (assimilate, digest)

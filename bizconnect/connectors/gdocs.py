@@ -21,6 +21,9 @@ Verbs
   status [file]                                       show drift (local vs last sync, + Doc mod time)
   list                                                list all bindings in this repo
   unlink <file>                                       remove a binding (does not delete the Doc)
+  comments <file> [--json] [--out P]                  dump the Doc's comments (feedback capture)
+  diff <file>                                         unified diff: Doc body vs local (direct edits)
+  resolve <file> <commentId> [--note T]               resolve a comment thread (close-out)
 """
 from __future__ import annotations
 
@@ -436,9 +439,102 @@ def _die_google(e, doc_id):
     sys.exit(1)
 
 
+# ----------------------------------------------------------- feedback capture
+def _comments_md(key, comments):
+    L = [f"# Comments — {key} ({len(comments)})", ""]
+    for c in comments:
+        who = (c.get("author") or {}).get("displayName", "?")
+        L.append(f"## comment {c.get('id')} · {who} · {c.get('createdTime','')} · "
+                 f"resolved={c.get('resolved', False)}")
+        q = (c.get("quotedFileContent") or {}).get("value", "")
+        if q:
+            L.append(f"> quoted: {q!r}")
+        L.append((c.get("content") or "").strip())
+        for r in c.get("replies", []):
+            rwho = (r.get("author") or {}).get("displayName", "?")
+            L.append(f"- reply ({rwho}): {(r.get('content') or '').strip()}")
+        L.append("")
+    return "\n".join(L)
+
+
+def cmd_comments(argv):
+    arg = _positional(argv, value_flags=("--out",))
+    if not arg:
+        sys.exit("comments needs <file>")
+    local = _resolve_local(arg)
+    data, conn_path, root = _repo()
+    key = _rel(local, root)
+    binding = _binding(data, key)
+    if not binding or not binding.get("doc_id"):
+        sys.exit(f"no Doc bound to {key}. `gdoc push`/`gdoc link` first.")
+    doc_id = binding["doc_id"]
+    drive = _drive(data)
+    try:
+        comments = _google.comments_list(drive, doc_id)
+    except Exception as e:
+        _die_google(e, doc_id)
+    if "--json" in argv:
+        text = json.dumps({"file": key, "doc_id": doc_id, "comments": comments},
+                          indent=2, ensure_ascii=False)
+    else:
+        text = _comments_md(key, comments)
+    out_path = _opt(argv, "--out")
+    if out_path:
+        p = _resolve_local(out_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        print(f"wrote {len(comments)} comment(s) -> {out_path}")
+    else:
+        print(text)
+
+
+def cmd_diff(argv):
+    arg = _positional(argv)
+    if not arg:
+        sys.exit("diff needs <file>")
+    local = _resolve_local(arg)
+    data, conn_path, root = _repo()
+    key = _rel(local, root)
+    binding = _binding(data, key)
+    if not binding or not binding.get("doc_id"):
+        sys.exit(f"no Doc bound to {key}.")
+    drive = _drive(data)
+    try:
+        content = drive.files().export(fileId=binding["doc_id"], mimeType=MD_MIME).execute()
+    except Exception as e:
+        _die_google(e, binding["doc_id"])
+    if isinstance(content, bytes):
+        content = content.decode("utf-8")
+    base = local.read_text(encoding="utf-8") if local.exists() else ""
+    import difflib
+    diff = list(difflib.unified_diff(base.splitlines(), content.splitlines(),
+                fromfile=f"a/{key} (local)", tofile=f"b/{key} (Doc)", lineterm=""))
+    print("\n".join(diff) if diff else f"no direct edits: Doc matches {key}")
+
+
+def cmd_resolve(argv):
+    pos = [a for a in argv if not a.startswith("-")]
+    if len(pos) < 2:
+        sys.exit("resolve needs <file> <commentId>")
+    local = _resolve_local(pos[0])
+    note = _opt(argv, "--note", "Resolved via biz-connect.")
+    data, conn_path, root = _repo()
+    key = _rel(local, root)
+    binding = _binding(data, key)
+    if not binding or not binding.get("doc_id"):
+        sys.exit(f"no Doc bound to {key}.")
+    drive = _drive(data)
+    try:
+        _google.comment_resolve(drive, binding["doc_id"], pos[1], note)
+    except Exception as e:
+        _die_google(e, binding["doc_id"])
+    print(f"resolved comment {pos[1]} on {key}")
+
+
 VERBS = {
     "push": cmd_push, "pull": cmd_pull, "link": cmd_link, "unlink": cmd_unlink,
     "status": cmd_status, "list": cmd_list,
+    "comments": cmd_comments, "diff": cmd_diff, "resolve": cmd_resolve,
 }
 
 

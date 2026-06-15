@@ -37,8 +37,9 @@ scripts\install.ps1     # Windows
 
 (For local development on a clone, install from a path: `/plugin marketplace add C:/path/to/biz-connect`.)
 
-After the next session start, six skills are available in **every** project:
-`gdoc-sync`, `notion-notes`, `sheet-io`, `git-flow`, `doc-pipeline`, `biz-connect-setup`.
+After the next session start, eight skills are available in **every** project:
+`gdoc-sync`, `notion-notes`, `sheet-io`, `git-flow`, `doc-pipeline`, `feedback-ingest`,
+`register`, `biz-connect-setup`.
 
 > **Restart Claude Code (start a new session) before running steps 2–3.**
 > `${CLAUDE_PLUGIN_ROOT}` is only set once the plugin is loaded; in the same session it is
@@ -183,14 +184,16 @@ everyone's update nudge, so bump it on every meaningful change.
 
 | Service | Verbs | Notes |
 |---------|-------|-------|
-| `gdoc` | `push pull status link unlink list` | local Markdown ↔ Google Doc (Drive native Markdown conversion) |
+| `gdoc` | `push pull status link unlink list comments diff resolve` | local Markdown ↔ Google Doc; `comments`/`diff`/`resolve` capture review feedback |
 | `notion` | `whoami check read upload fill` | media upload + headless read; text via the Notion MCP |
 | `sheet` | `whoami check read write append clear create` | service-account Sheets r/w |
 | `git` | `status save sync pr` | branch-off-protected, co-author trailer, rebase-sync, PR |
-| `compose` | `status run accept scaffold graph` | config-driven document-composition pipeline (`pipeline.yaml`); its `inputs` stage syncs external source docs declared in `connections.yaml` |
+| `compose` | `status run accept scaffold graph` | config-driven document-composition pipeline (`pipeline.yaml`); `inputs` syncs external sources; `assimilate`/`digest` close the feedback loop |
+| `register` | `init pull upsert open status resolve journal` | Notion-DB open-points register for review feedback (the feedback roundtrip's spine) |
 
 Plus `bizconnect doctor` / `init` / `update` / `version`. Skills (`/biz-connect:gdoc-sync`,
-`notion-notes`, `sheet-io`, `git-flow`, `doc-pipeline`, `biz-connect-setup`) wrap these for Claude.
+`notion-notes`, `sheet-io`, `git-flow`, `doc-pipeline`, `feedback-ingest`, `register`,
+`biz-connect-setup`) wrap these for Claude.
 
 ### Google Docs ownership
 
@@ -199,6 +202,46 @@ either (A) enable domain-wide delegation and set `GOOGLE_IMPERSONATE_SUBJECT` (n
 owned by you), (B) point `google.drive_folder` at a Shared Drive, or (C) create the Doc
 yourself + `gdoc link`. Updating an existing Doc the SA can edit always works. See the
 **biz-connect-setup** skill.
+
+## The feedback roundtrip (review → register → next turn)
+
+`compose` builds a document; this loop closes feedback on it back into the pipeline so the
+*next* draft is made with respect to reviewer comments — not patched ad hoc. It turns a
+reviewed Google Doc into triaged, referenced **open points** held in a Notion database (the
+stateful spine), and feeds those points back into generation.
+
+```
+  render ─▶ Google Doc ─▶ reviewers comment / suggest / edit
+                                  │
+                gdoc comments + gdoc diff          (capture)
+                                  ▼
+                compose run assimilate             (one high-reasoning pass)
+                  • lift each comment → an open point WITH references
+                  • triage by DISPOSITION: finesse | tonal | rethink | research | discussion
+                  • route to LAYER: answer | spec | house-position | prompt
+                  • cluster across items; emit register deltas
+                                  ▼
+                register upsert ─▶ Notion open-points DB ◀─ team works the gated rows
+                  (dedupe by comment-id; field-ownership safe; journalled)
+                                  │  register pull
+                                  ▼
+                local projection ─▶ {{OPEN_POINTS}} into the next spec/draft/critique
+                compose run digest ─▶ deliberation brief ─▶ review Doc (the gated points)
+                                  ▼
+                agreed steps → source edits → staleness → rebuild → re-render → re-push
+```
+
+**Disposition decides re-entry.** `finesse`/`tonal` the pipeline clears automatically;
+`rethink`/`research`/`discussion` are *gated* — they surface in the deliberation brief and
+wait on a human or external input. Each point carries a stable `ISS-nnn` id threading the
+in-text marker (`[DECISION: ISS-nnn …]`), the register row, the brief, and the source edit;
+`lint` cross-checks markers against the register both ways.
+
+**Where it lives.** The register's home is a **Notion database** (the team's live table); a
+committed Markdown **projection** is what the pipeline reads. Bind it per-repo in
+`connections.yaml` under `notion.register_db`; the consultation-specific prompts
+(`assimilate.md`, `digest.md`) and register schema live in the consuming repo — the engine
+stays generic and content-free. See the **feedback-ingest** and **register** skills.
 
 ## Roadmap (from a survey of existing notion-bot tooling)
 
@@ -239,7 +282,7 @@ bizconnect/
   config.py        central store + connections.yaml resolution
   cli.py           `bizconnect <service> <verb>` dispatch + doctor/init
   _google.py       shared service-account auth (+ optional impersonation)
-  connectors/      gdocs.py  notion.py  gsheets.py  git.py
+  connectors/      gdocs.py  notion.py  gsheets.py  git.py  compose.py  register.py
 scripts/bizconnect.py   self-bootstrapping launcher (creates the central-store venv)
 skills/                 plugin skills (one dir per affordance)
 examples/connections.example.yaml

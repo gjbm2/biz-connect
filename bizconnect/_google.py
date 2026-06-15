@@ -78,3 +78,27 @@ def http_error(e):
     except Exception:
         detail = str(e)
     return status, detail
+
+
+def comments_list(drive, file_id):
+    """All comments on a Drive file (Doc), with anchor + quoted text + replies. Needs the
+    DRIVE scope (already used by the Google connectors). Paginates fully."""
+    fields = ("nextPageToken,comments(id,content,resolved,anchor,createdTime,modifiedTime,"
+              "quotedFileContent(value),author(displayName),"
+              "replies(content,createdTime,author(displayName)))")
+    out, token = [], None
+    while True:
+        resp = drive.comments().list(fileId=file_id, fields=fields, pageSize=100,
+                                     includeDeleted=False, pageToken=token).execute()
+        out.extend(resp.get("comments", []))
+        token = resp.get("nextPageToken")
+        if not token:
+            break
+    return out
+
+
+def comment_resolve(drive, file_id, comment_id, note="Resolved via biz-connect."):
+    """Resolve a comment thread by posting a reply with action=resolve (idempotent close-out)."""
+    return drive.replies().create(
+        fileId=file_id, commentId=comment_id, fields="id,action",
+        body={"content": note, "action": "resolve"}).execute()
