@@ -1,0 +1,45 @@
+# biz-connect `compose` — document-composition pipeline config for this repo.
+#
+# COMMITTED, NO secrets. Copy to your repo root as `pipeline.yaml`.
+# `compose` finds it by walking up from the cwd (like connections.yaml).
+#
+# The pipeline shape is fixed (corpus -> per-item evidence pack -> spec -> draft ->
+# critique -> ladder -> lint -> render). Everything project-specific lives in the files
+# this config points at. Run `bizconnect compose graph` to see the resolved targets.
+
+title: "# My document"            # heading used by `render`
+
+items:                            # the per-item dimension (e.g. questions, sections, chapters)
+  source: index/items.json        # a JSON file...
+  list_key: items                 # ...with the list under this key (omit if the file IS a list)
+  id_key: id                      # each item's id field (e.g. "Q1", "S3")
+  text_key: text                  # the item's prompt/body field (optional)
+  pad: 2                          # zero-pad the trailing number for filenames: Q1 -> Q01 (0 = no pad)
+
+index:                            # OPTIONAL structured evidence index that maps items -> sources
+  source: index/corpus.json
+  entries_key: entries            # list of evidence entries
+  entry_id_key: path              # the field that identifies/cites an entry
+  item_map_key: item_evidence     # dict: item-id -> [entry ids]  (or {all: [...], ...} groups)
+
+paths:
+  global_context: context/global.md          # the GLOBAL guide injected into every llm step
+  local_dir: context/items                   # per-item guides: <id>.md  (human-owned)
+  prompts_dir: prompts                        # llm step templates: spec.md draft.md critique.md ladder.md
+  answers_dir: answers                        # per-item answers: <id>.md  (human-owned)
+  submission: submission/front-matter.md      # laddered-up front matter (human-owned; optional)
+  build_dir: build                            # scratch: evidence packs, prompts, gen drafts, manifest
+  final: final/document.md                    # render output
+
+# lint: unresolved markers to flag in answers, and a provenance token each answer should contain
+markers: ["[VERIFY", "[DECISION", "[RECONCILE"]
+provenance: "(src:"
+
+# --- prompt placeholders your prompts/<stage>.md may use (filled by compose) ---
+#   {{GLOBAL_CONTEXT}}  the global guide            (all llm stages)
+#   {{ITEM_ID}}         the item's id               (per-item stages)
+#   {{ITEM_TEXT}}       the item's text             (per-item stages)
+#   {{EVIDENCE}}        the assembled evidence pack (spec, draft)
+#   {{LOCAL_CONTEXT}}   the item's local guide      (draft, critique)
+#   {{OUTPUT}}          the item's current answer   (critique)
+#   {{ALL_OUTPUTS}}     all answers concatenated    (ladder)

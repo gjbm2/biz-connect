@@ -15,7 +15,8 @@ from pathlib import Path
 from . import __version__, config
 
 SERVICES = {"gdoc": "gdocs", "gdocs": "gdocs", "notion": "notion",
-            "sheet": "gsheets", "sheets": "gsheets", "gsheet": "gsheets", "git": "git"}
+            "sheet": "gsheets", "sheets": "gsheets", "gsheet": "gsheets", "git": "git",
+            "compose": "compose"}
 
 USAGE = """biz-connect — business-service connectors for this repo.
 
@@ -28,8 +29,10 @@ USAGE = """biz-connect — business-service connectors for this repo.
   bizconnect notion whoami|check|read|upload|fill        read pages, upload local media
   bizconnect sheet  whoami|check|read|write|append|clear|create
   bizconnect git    status|save|sync|pr                  standardised git flow
+  bizconnect compose status|run|accept|scaffold|graph    config-driven doc-composition pipeline
 
 Bindings (which Doc/page this repo uses) live in ./connections.yaml.
+The doc pipeline is configured by ./pipeline.yaml (see examples/pipeline.example.yaml).
 Credentials live in the central store (%s).
 """ % (config.home(),)
 
