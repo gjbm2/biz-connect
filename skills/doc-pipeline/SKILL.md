@@ -1,7 +1,7 @@
 ---
 name: doc-pipeline
-description: Build a structured document (e.g. a consultation response, a multi-section report) from a corpus, one item at a time, with incremental/partial rebuilds. Use when a repo has a pipeline.yaml and the user wants to draft, review, or rebuild per-item answers, ladder them into front matter, lint, or render the document. Deterministic steps run as code; you (the agent) do the writing steps from the repo's own prompt templates. Keep the human-owned files (context/, answers/, submission/) as the source of truth.
-allowed-tools: Bash(python *), Read, Edit, Write
+description: Build a structured document (e.g. a consultation response, a multi-section report) from a corpus, one item at a time, with incremental/partial rebuilds. Use when a repo has a pipeline.yaml and the user wants to draft, review, or rebuild per-item answers, ladder them into front matter, lint, or render the document. Deterministic steps run as code; the per-item writing steps fan out to parallel high-reasoning subagents (or run inline), and the rendered document is pushed to a Google Doc for review. Keep the human-owned files (context/, answers/, submission/) as the source of truth.
+allowed-tools: Agent, Bash(python *), Read, Edit, Write
 ---
 
 # Document-composition pipeline (`compose`)
@@ -57,8 +57,28 @@ For an item id (e.g. `Q7`):
    `front_matter_template` (`{{TEMPLATE}}`) and weaves in `intro` (`{{INTRO}}`). Then
    **`compose run lint`** (completeness/provenance) and **`compose run render`** (assembled doc).
 
-You execute the llm steps either inline (you, now) or by fanning out one agent per item
-across many ids — the prompt files the tool writes are the same either way.
+## Full build: fan out to high-reasoning agents, deliver a GDoc
+
+A full build runs the per-item LLM work as **parallel high-reasoning subagents** (the
+deterministic steps stay code). For a stage across all items (`spec` / `draft` / `critique`):
+
+1. `… compose run <stage> all` — writes every item's prompt into `build/<id>.<stage>.prompt.md`.
+2. **Fan out:** launch one subagent per item *in parallel* with the **Agent** tool, each on a
+   high-reasoning model (`model: opus`). Tell each to read its `build/<id>.<stage>.prompt.md`,
+   do the writing, and save **only** to `build/<id>.<stage>.gen.md` — never a human-owned file.
+3. **Promote + record:** merge each `…gen.md` into its canonical human-owned file
+   (`spec`→`context/<id>.md`, `draft`→`answers/<id>.md`), then `… compose accept <stage> all`.
+
+Then the single-shot steps (no fan-out): `… compose run ladder` → promote the front matter;
+`… compose run lint`; `… compose run render`.
+
+**Deliver for review:** `… gdoc push <final>` pushes the rendered document to a Google Doc
+(created and bound in `connections.yaml` on first run). That Doc is what reviewers mark up —
+the input to the **feedback roundtrip** (`feedback-ingest` skill). So one build goes: fan-out
+drafts → ladder → render → **GDoc for review** → roundtrips.
+
+For a one-off or a single id, run a stage inline (you, now) instead of fanning out — the
+prompt files are identical either way.
 
 ## Partial / incremental builds
 
