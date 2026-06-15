@@ -59,6 +59,15 @@ from inside the consuming repo (it finds `pipeline.yaml` by walking up from the 
 > `intro: //nous-background.md`), resolved from the repo root. Single-deliverable repos need
 > none of this and behave exactly as before.
 
+**Pick the deliverable sensibly (don't make the user spell it out).** When asked to build/draft
+in an umbrella repo without a named deliverable: if the cwd is already inside one, use it; else
+run `bizconnect deliverable list` — if there's exactly one, use it; if several, choose the one
+matching the consultation/topic the user named (its title), and only ask if it's genuinely
+ambiguous. Then `cd` into that deliverable before running any verb. For the **item**: default to
+the whole deliverable (`run draft all` → ladder → render) unless the user names a specific item
+(e.g. `Q7`) — then rebuild just that item's chain. `compose status` (run from the deliverable)
+shows what's actually stale, so "build/refresh the doc" rebuilds exactly what changed.
+
 ```bash
 BC='python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose'
 python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose status        # FRESH/STALE/MISSING per target

@@ -73,10 +73,11 @@ def _db_id(data):
 
 def _set_db(data, path, fields):
     from ruamel.yaml.comments import CommentedMap
-    n = data.get("notion")
+    container = config.scoped_parent(data, create=True)   # deliverables.<slug> if inside one, else top level
+    n = container.get("notion")
     if not isinstance(n, dict):
         n = CommentedMap()
-        data["notion"] = n
+        container["notion"] = n
     rd = n.get("docs_registry")
     if not isinstance(rd, CommentedMap):
         merged = CommentedMap()

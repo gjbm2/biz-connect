@@ -199,3 +199,51 @@ def scoped(data, dotted, deliverable=None, start=None):
         if val is not None:
             return val
     return get_path(data, dotted)
+
+
+def scoped_parent(data, deliverable=None, start=None, create=False):
+    """The mapping a top-level key (e.g. 'notion', 'google') should be read/written UNDER for the
+    active deliverable: data['deliverables'][slug] when one is active, else `data` itself. With
+    create=True, builds the deliverables.<slug> maps as needed — this is how `register init` /
+    `docreg init` write their binding into the right scope when run inside a deliverable."""
+    if deliverable is None:
+        deliverable = active_deliverable(start)
+    if not deliverable:
+        return data
+    from ruamel.yaml.comments import CommentedMap
+    dl = data.get("deliverables")
+    if not isinstance(dl, dict):
+        if not create:
+            return data
+        dl = CommentedMap(); data["deliverables"] = dl
+    slot = dl.get(deliverable)
+    if not isinstance(slot, dict):
+        if not create:
+            return data
+        slot = CommentedMap(); dl[deliverable] = slot
+    return slot
+
+
+def list_deliverables(start=None):
+    """Enumerate an umbrella repo's deliverables: scan <repo>/deliverables/*/pipeline.yaml and
+    read each one's `deliverable:` slug + `title:`. Returns [{slug, title, dir}] sorted by slug.
+    Empty for a single-deliverable repo (no deliverables/ dir) — callers then just use cwd."""
+    root = repo_root(start)
+    if not root:
+        return []
+    base = root / "deliverables"
+    if not base.is_dir():
+        return []
+    out = []
+    for d in sorted(p for p in base.iterdir() if p.is_dir()):
+        pf = d / PIPELINE_NAME
+        if not pf.exists():
+            continue
+        try:
+            with open(pf, encoding="utf-8") as fh:
+                pd = _yaml().load(fh) or {}
+        except Exception:
+            pd = {}
+        out.append({"slug": pd.get("deliverable") or d.name,
+                    "title": pd.get("title") or "", "dir": str(d)})
+    return out
