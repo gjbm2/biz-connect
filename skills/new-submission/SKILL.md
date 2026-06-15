@@ -42,6 +42,16 @@ $BC register init --parent <hub>      # open-points register DB (inline child DB
 $BC docreg   init --parent <hub>      # docs-registry DB (inline child DB on the hub)
 ```
 
+> **Notion access is a prerequisite for step 2.** `register init` / `docreg init` create databases
+> *on* `<hub>`, and the build later scrapes `<hub>` as a research input — both need the `nous-reg
+> pipeline` Notion connection to reach `<hub>`. If that connection is attached at the umbrella
+> *Consultations and regulation* page (the recommended setup — see `tooling/README.md` §1), every
+> hub beneath it is already covered and there's nothing to do. If it's scoped per-hub instead, open
+> `<hub>` → ••• → **Add connections** → `nous-reg pipeline` *before* running step 2, or init fails
+> with a Notion permission error. `deliverable new --hub <hub>` records `<hub>` as each database's
+> `parent` in the stub, so `register init` / `docreg init` target the right page even if you omit
+> `--parent`.
+
 `deliverable new` is idempotent-ish: it refuses to overwrite an existing `deliverables/<slug>/`.
 `register init` / `docreg init` skip creation if already bound. To designate an **existing** hub
 that already has its planning content, just pass it as `--hub`; to start from scratch, create the
@@ -57,7 +67,10 @@ Inside `deliverables/<slug>/`:
   style, or author fresh).
 - `response/05.submission/front-matter-template.md` — the front-matter skeleton.
 - Optionally `index/corpus.json` (evidence index) and a `deliverables.<slug>.inputs` block in
-  `connections.yaml` for source docs to sync.
+  `connections.yaml` for source docs to sync. If one of those inputs is the hub itself (a `notion`
+  input), list **this deliverable's own** `register_db` + `docs_registry` database ids under its
+  `exclude:` so the scrape doesn't recurse into the output databases it already round-trips. (The
+  ids are written into `deliverables.<slug>` by `register init` / `docreg init`.)
 
 Then build it with the **doc-pipeline** skill (`compose status` from inside the folder). Shared
 umbrella assets (e.g. company background) are referenced with a `//` path
