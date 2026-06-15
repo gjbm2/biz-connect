@@ -1,6 +1,6 @@
 ---
 name: doc-pipeline
-description: Build a structured document (e.g. a consultation response, a multi-section report) from a corpus, one item at a time, with incremental/partial rebuilds. Use when a repo has a pipeline.yaml and the user wants to draft, review, or rebuild per-item answers, ladder them into front matter, lint, or render the document. Deterministic steps run as code; the per-item writing steps fan out to parallel high-reasoning subagents (or run inline), and the rendered document is pushed to a Google Doc for review. Keep the human-owned files (context/, answers/, submission/) as the source of truth.
+description: Build a structured document (e.g. a consultation response, a multi-section report) from a corpus — either end-to-end in one pass ("create/build/assemble the whole document/submission") or by commissioning any single stage or item (incremental/partial rebuilds). Use when a repo has a pipeline.yaml and the user wants to create the whole doc, or draft, review, rebuild per-item answers, ladder them into front matter, lint, render, or publish. Deterministic steps run as code; the per-item writing steps fan out to parallel high-reasoning subagents (or run inline), and the rendered document is pushed to a Google Doc for review. Keep the human-owned files (context/, answers/, submission/) as the source of truth.
 allowed-tools: Agent, Bash(python *), Read, Edit, Write
 ---
 
@@ -39,6 +39,32 @@ the repo's `connections.yaml` under `inputs:` (e.g. a Google Doc someone drafted
 **read-only** — it pulls each source into its `extract_to` path and never writes back —
 and idempotent (only rewrites a copy that changed). Run it first so downstream steps build
 off fresh inputs.
+
+## Build the whole document (one pass)
+
+"Create the doc" = run the whole pipeline end-to-end. It is **one overall pipeline, but you can
+commission only parts of it** — any single stage or item — whenever you need to. The default
+for "build/assemble/create the document" is the full sequence:
+
+1. `compose run inputs` — refresh external source docs (if the repo declares any).
+2. `compose scaffold` — create any missing per-item guides.
+3. **Draft every answer.** `compose run draft all` writes one draft prompt per item into
+   `build/`. Execute them — ideally **one subagent per item, fanned out in parallel** (Agent
+   tool) — writing each answer to `answers/<id>.md`. Run `spec` first for items whose guide is
+   thin, if you want an argument plan before drafting.
+4. `compose run ladder` — distil the front matter from the answers.
+5. `compose run lint` — provenance / marker / register checks.
+6. `compose run render` — assemble `final/<doc>.md`.
+7. **Publish** (gdoc-sync skill): `gdoc push <final> --new --version vX.Y` for a major build (a
+   fresh Doc instance + a registry row), or a plain `gdoc push <final>` to update the current
+   instance in place.
+
+Then report the flagged `[DECISION]`/`[VERIFY]` markers and any open register points for review
+— on the assembled draft, rather than gating each of the per-item steps.
+
+**Commission only part of it** whenever you need to: `compose run draft Q7` redoes one answer,
+`compose run render` just reassembles, `compose run ladder` just the front matter. `compose
+status` shows what's actually stale, so you rebuild exactly what changed and nothing more.
 
 ## Producing one item (the happy path)
 
