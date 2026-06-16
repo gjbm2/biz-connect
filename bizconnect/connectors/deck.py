@@ -17,7 +17,8 @@ Verbs
   build      slide-specs + template -> <output> deck.pptx     (single COM pass)
   preview    <output> deck.pptx -> per-slide PNGs (+ optional PDF)
   status     FRESH/STALE/MISSING per slide vs the slide-spec hashes
-  push       publish the deck/PDF to Drive (+ docs-registry row)   [wiring: see cmd_push]
+  push       publish the built .pptx (+ PDF) to Drive, log a docs-registry row,
+             and ATTACH the .pptx onto that row's Notion page (no COM/PowerPoint)
 
 Driven by `deck.yaml` (found by walking up from the cwd, like pipeline.yaml). The COM
 build/preview run on Windows with PowerPoint installed; status/push validation of the
@@ -660,13 +661,221 @@ def cmd_status(cfg, args):
     print()
 
 
-def cmd_push(cfg, args):
-    """Publish the built deck/PDF to Drive and log a docs-registry version row.
+# --------------------------------------------------------------- push (publish)
+# COM-SAFE: `push` operates ONLY on the already-built files on disk (the .pptx from
+# `build` and the .pdf from `preview`). It never opens PowerPoint, never drives COM,
+# and never touches any Office process — it uploads bytes to Drive and Notion.
 
-    Wiring lands next (mirrors gdocs.cmd_push --new --version + docreg.log_instance,
-    reusing _google.build + connections.yaml google.drive_folder). Build + preview first."""
-    sys.exit("deck push: Drive/docreg wiring not enabled yet — run `deck build` then "
-             "`deck preview`, and publish the PDF via the vdr/gdoc path for now.")
+def _push_opt(args, name, default=None):
+    if name in args:
+        i = args.index(name)
+        if i + 1 < len(args):
+            return args[i + 1]
+    return default
+
+
+def _git_sha(root):
+    """Short git sha of `root`'s HEAD, or "" (mirrors gdocs._git_sha — kept local so
+    deck.py stays self-contained and never edits another connector's file)."""
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _folder_id(s):
+    """Extract a Drive folder id from a folder URL or pass an id through (gdocs pattern)."""
+    if not s:
+        return None
+    import re
+    s = str(s).strip()
+    m = re.search(r"/folders/([a-zA-Z0-9_-]+)", s)
+    return m.group(1) if m else s
+
+
+def _content_sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _drive_upload(drive, path, mime, folder, name=None):
+    """Create a Drive file from `path`. Returns (file_id, webViewLink). Reuses the
+    gdocs Drive-upload pattern (files().create + supportsAllDrives); streams bytes
+    from disk via MediaFileUpload (a .pptx is binary, not in-memory Markdown)."""
+    from googleapiclient.http import MediaFileUpload
+    media = MediaFileUpload(str(path), mimetype=mime, resumable=False)
+    body = {"name": name or Path(path).name}
+    if folder:
+        body["parents"] = [folder]
+    f = drive.files().create(body=body, media_body=media,
+                             fields="id,name,webViewLink",
+                             supportsAllDrives=True).execute()
+    fid = f["id"]
+    url = f.get("webViewLink") or "https://drive.google.com/file/d/%s/view" % fid
+    return fid, url
+
+
+def _maybe_share(drive, file_id, data, folder):
+    """Share a newly-created Drive file back to a human (else it's stranded in the SA's
+    Drive). Mirrors gdocs._maybe_share; kept local so we don't import another connector's
+    private helper. No-op when the file already lives in a shared folder."""
+    from .. import config
+    share = config.get_path(data, "google.share_with")
+    if not share:
+        if not folder:
+            print("  WARNING: new Drive file is owned by the service account and not shared.\n"
+                  "  Set google.share_with (your email) or google.drive_folder in connections.yaml.")
+        return
+    try:
+        drive.permissions().create(
+            fileId=file_id, sendNotificationEmail=False,
+            body={"type": "user", "role": "writer", "emailAddress": share},
+            fields="id", supportsAllDrives=True).execute()
+        print("  shared with %s (Editor)" % share)
+    except Exception as e:
+        from .. import _google
+        status, detail = _google.http_error(e)
+        print("  WARN could not share with %s [%s]: %s" % (share, status, detail))
+
+
+def _docreg_row_page_id(data, artifact):
+    """The Notion page id of the docs-registry's CURRENT row for `artifact`, or None.
+    `log_instance` doesn't return the page id, so we look the row up by artifact via the
+    docs_registry DB (reusing docreg._query/_row_get/_db — read-only)."""
+    from . import docreg
+    if not docreg._db(data).get("database_id"):
+        return None
+    try:
+        rows = docreg._query(data, filt={"property": "Artifact",
+                                         "rich_text": {"equals": artifact}})
+    except Exception:
+        return None
+    current = [r for r in rows if docreg._row_get(r, "Status") == "current"]
+    chosen = current[0] if current else (rows[-1] if rows else None)
+    return chosen.get("id") if chosen else None
+
+
+def _attach_pptx_to_notion(page_id, pptx, marker, caption):
+    """Upload the .pptx and append a downloadable file block to the registry row page.
+    Idempotent: if a file block already carries this build's `marker` in its caption, skip.
+    Returns a human status string. Never aborts the push — the caller wraps failures."""
+    from . import notion
+    # Idempotency: scan existing children for our marker so re-pushing the same build
+    # doesn't pile up duplicate file blocks on the row page.
+    try:
+        for b in notion.get_children(page_id):
+            if b.get("type") != "file":
+                continue
+            cap = "".join(r.get("plain_text", "")
+                          for r in b.get("file", {}).get("caption", []))
+            if marker and marker in cap:
+                return "already attached (%s)" % marker
+    except Exception:
+        pass                                         # can't list -> just try to attach
+    fid = notion.upload_file(Path(pptx))
+    block = notion.media_block("file", fid, caption)
+    notion.attach(page_id, [block])
+    return "attached %s" % Path(pptx).name
+
+
+def cmd_push(cfg, args):
+    """Publish the built deck to Drive, log a docs-registry version row, and ATTACH the
+    .pptx onto that row's Notion page (so the PowerPoint is downloadable from the doc-output
+    page). Operates ONLY on the already-built files — no PowerPoint/COM interaction.
+
+    Requires `deck build` (the .pptx) and `deck preview` (the PDF) to have run first.
+
+      deck push [--folder ID] [--version V] [--new] [--notes T] [--no-pdf] [--no-notion]
+    """
+    from .. import config
+    from .. import _google
+    from . import docreg
+
+    # 1) Require the built deck (.pptx) and its PDF (from preview).
+    pptx = cfg.ap(cfg.g("output", "final/deck.pptx"))
+    pv = cfg.g("preview", {}) or {}
+    pdf = cfg.ap(pv.get("pdf_path", "final/deck.pdf"))
+    if not pptx.exists():
+        sys.exit("no built deck at %s — run `deck build` first." % pptx)
+    want_pdf = ("--no-pdf" not in args)
+    if want_pdf and not pdf.exists():
+        sys.exit("no PDF at %s — run `deck preview` first (or pass --no-pdf to skip it)." % pdf)
+
+    version = _push_opt(args, "--version")
+    folder_override = _push_opt(args, "--folder")
+    new = "--new" in args
+    notes = _push_opt(args, "--notes", "")
+
+    data, conn_path = config.require_connections()
+    root = conn_path.parent
+    try:
+        artifact = pptx.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        artifact = pptx.name
+    content_sha = _content_sha256(pptx)
+    git_sha = _git_sha(root)
+
+    # 2) Upload the .pptx (and PDF) to Drive (reuse the gdocs/_google Drive path +
+    #    connections.yaml google.drive_folder, scoped to the active deliverable).
+    drive = _google.build("drive", "v3", [_google.DRIVE],
+                          subject=_google.impersonation_subject(data))
+    folder = _folder_id(folder_override) or _folder_id(config.scoped(data, "google.drive_folder"))
+    suffix = (" — %s" % version) if version else ""
+    try:
+        pptx_id, pptx_url = _drive_upload(
+            drive, pptx, "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            folder, name="%s%s.pptx" % (pptx.stem, suffix))
+        _maybe_share(drive, pptx_id, data, folder)
+        pdf_url = None
+        if want_pdf:
+            pdf_id, pdf_url = _drive_upload(drive, pdf, "application/pdf", folder,
+                                            name="%s%s.pdf" % (pdf.stem, suffix))
+            _maybe_share(drive, pdf_id, data, folder)
+    except Exception as e:
+        status, detail = _google.http_error(e)
+        sys.exit("Drive upload failed [%s]: %s" % (status, detail))
+
+    print("pushed deck to Drive:")
+    print("  pptx: %s" % pptx_url)
+    if pdf_url:
+        print("  pdf:  %s" % pdf_url)
+
+    # 3) Log/refresh a docs-registry row for the deck artifact (reuse docreg.log_instance):
+    #    version, the Drive URL, git sha, content hash, status=current. No-op if unbound.
+    reg_notes = " | ".join(x for x in [notes, ("PDF: %s" % pdf_url) if pdf_url else ""] if x)
+    page_id = None
+    try:
+        msg = docreg.log_instance(data, root, artifact=artifact, doc_id=pptx_id,
+                                  doc_url=pptx_url, version=version, content_sha=content_sha,
+                                  git_sha=git_sha, notes=reg_notes, new=new)
+        if msg:
+            print("  registry: %s" % msg)
+            page_id = _docreg_row_page_id(data, artifact)
+        else:
+            print("  registry: no docs registry bound (notion.docs_registry) — "
+                  "skipping row + Notion attach. `bizconnect docreg init` to enable.")
+    except Exception as e:
+        print("  (doc registry not updated: %s)" % e)
+
+    # 4) ATTACH the .pptx onto the docreg row's Notion page so it's downloadable there.
+    #    Wrapped so a Notion hiccup (or an oversized .pptx) never loses the Drive upload
+    #    or the registry row that already succeeded above.
+    if "--no-notion" in args:
+        print("  notion: --no-notion -> skipped attaching the .pptx")
+    elif page_id:
+        marker = "[deck:%s]" % (version or content_sha[:12])
+        caption = "Deck %s %s" % (version or "", marker)
+        try:
+            print("  notion: %s" % _attach_pptx_to_notion(page_id, pptx, marker, caption))
+        except SystemExit as e:                      # notion.upload_file size-limit guard
+            print("  (notion attach skipped: %s)" % e)
+        except Exception as e:
+            print("  (notion attach failed: %s)" % e)
+    elif docreg._db(data).get("database_id"):
+        print("  notion: could not locate the registry row page — .pptx not attached "
+              "(it is on Drive; re-run after the row exists).")
 
 
 VERBS = {"build": cmd_build, "preview": cmd_preview, "status": cmd_status, "push": cmd_push}

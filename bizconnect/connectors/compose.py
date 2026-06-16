@@ -475,7 +475,9 @@ def assemble_prompt(cfg, stage, raw, pid):
 def run_inputs(cfg):
     """Sync external inputs declared in connections.yaml `inputs:` to their local
     Markdown copies, READ-ONLY (we never write back to the source). Idempotent:
-    only rewrites a file whose content changed. Currently supports type: gdoc."""
+    only rewrites a file whose content changed. Supports type: gdoc (one Doc -> one
+    file), notion (recursive hub -> directory mirror), and notion_pages (directed
+    page -> file: each definitional doc mastered as its own page -> a repo path)."""
     from .. import config as _conn, _google
     from .gdocs import _doc_id_from
     data, _p = _conn.load_connections(start=cfg.root)
@@ -489,7 +491,32 @@ def run_inputs(cfg):
     for handle, spec in inputs.items():
         if not isinstance(spec, dict):
             continue
-        typ, dest, ref = spec.get("type", "gdoc"), spec.get("extract_to"), spec.get("doc_id") or spec.get("url")
+        typ = spec.get("type", "gdoc")
+        if typ == "notion_pages":
+            # Directed page->file sync: each definitional doc is mastered as its own Notion
+            # page and projected to a specific repo path. Read-only; idempotent (only rewrite
+            # a file whose rendered Markdown changed). See docs/notion-defs-sync.md.
+            from .notion import page_to_markdown
+            page_locks = []
+            for entry in spec.get("pages", []) or []:
+                if not isinstance(entry, dict):
+                    continue
+                pref, to = entry.get("url") or entry.get("id"), entry.get("to")
+                if not pref or not to:
+                    page_locks.append({"skipped": "missing url/id or to"}); continue
+                md = page_to_markdown(pref)
+                content = md.encode("utf-8")
+                out = cfg.ap(to)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                changed = (not out.exists()) or out.read_bytes() != content
+                if changed:
+                    out.write_bytes(content); refreshed += 1
+                synced += 1
+                page_locks.append({"to": to, "sha": hashlib.sha1(content).hexdigest()[:12],
+                                   "refreshed": changed})
+            lock[handle] = {"type": "notion_pages", "pages": page_locks}
+            continue
+        dest, ref = spec.get("extract_to"), spec.get("doc_id") or spec.get("url")
         if not dest or not ref:
             lock[handle] = {"skipped": "missing extract_to or url"}; continue
         if typ == "notion":

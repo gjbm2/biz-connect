@@ -414,13 +414,17 @@ def _prop_value(p):
 
 
 class _Scraper:
-    def __init__(self, out_dir, exclude, max_depth, download_files, follow_links, catalog_links):
+    def __init__(self, out_dir, exclude, max_depth, download_files, follow_links, catalog_links,
+                 flat=False):
         self.out = Path(out_dir)
         self.exclude = set(exclude or [])
         self.max_depth = max_depth
         self.download_files = download_files
         self.follow_links = follow_links
         self.catalog_links = catalog_links
+        # flat: directed page->markdown render (page_to_markdown). Never write sidecar files,
+        # never query/dump linked databases, never recurse — just render this page's own blocks.
+        self.flat = flat
         self.visited_pages, self.visited_dbs = set(), set()
         self.links = []                # (text, url, source-rel)
         self.manifest = {"root": None, "pages": [], "databases": [], "files": [], "links": []}
@@ -545,6 +549,8 @@ class _Scraper:
 
         if bt == "child_database":
             title = b.get("child_database", {}).get("title", "database")
+            if self.flat:                              # flat page render: never query/dump a DB
+                return "%s- 🗄️ %s _(not expanded)_" % (pad, title)
             res = self.dump_database(b["id"], depth, source_rel)
             return "%s- 🗄️ [%s](%s)" % (pad, title, res[0]) if res else "%s- 🗄️ %s _(excluded)_" % (pad, title)
 
@@ -651,6 +657,25 @@ def sync_to_dir(page, out_dir, *, exclude=None, max_depth=3, download_files=True
     return {"pages": len(sc.manifest["pages"]), "databases": len(sc.manifest["databases"]),
             "files": len(sc.manifest["files"]), "links": len(sc.manifest["links"]),
             "refreshed": sc.refreshed}
+
+
+def page_to_markdown(page) -> str:
+    """Render ONE Notion page's OWN blocks to a Markdown string (directed page->file sync).
+
+    Flat by design: the title is dropped (the file body is the content), child pages are
+    NOT expanded, linked pages/databases are NOT followed, and media is NOT downloaded —
+    definitional docs are plain prose/prompt text. Headings, lists, paragraphs and FENCED
+    CODE BLOCKS are rendered faithfully via the shared `_Scraper` block renderer, and inline
+    text (including `{{PLACEHOLDER}}` tokens) is preserved verbatim.
+
+    Reuses the exact same `render_children`/`render_block`/`rich_md` path as `sync_to_dir`,
+    but configured to never recurse or fetch: max_depth=0 keeps `child_page`/`link_to_page`
+    from expanding, and download_files/follow_links are off."""
+    pid = norm_id(page)
+    sc = _Scraper(out_dir=Path("."), exclude=None, max_depth=0,
+                  download_files=False, follow_links=False, catalog_links=False, flat=True)
+    body = sc.render_children(pid, 0, [], None)
+    return body.strip() + "\n" if body.strip() else ""
 
 
 def cmd_sync(argv):
