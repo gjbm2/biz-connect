@@ -18,7 +18,8 @@ SERVICES = {"gdoc": "gdocs", "gdocs": "gdocs", "notion": "notion",
             "sheet": "gsheets", "sheets": "gsheets", "gsheet": "gsheets", "git": "git",
             "compose": "compose", "register": "register", "docreg": "docreg",
             "secrets": "secrets", "secret": "secrets",
-            "deliverable": "deliverable", "deliverables": "deliverable"}
+            "deliverable": "deliverable", "deliverables": "deliverable",
+            "deck": "deck"}
 
 USAGE = """biz-connect — business-service connectors for this repo.
 
@@ -32,6 +33,7 @@ USAGE = """biz-connect — business-service connectors for this repo.
   bizconnect sheet  whoami|check|read|write|append|clear|create
   bizconnect git    status|save|sync|pr                  standardised git flow
   bizconnect compose status|run|accept|scaffold|graph    config-driven doc-composition pipeline
+  bizconnect deck    build|preview|status|push           render a slide deck from slide-specs + a template (Windows/PowerPoint)
   bizconnect deliverable list|new <slug>  stand up / list deliverables in an umbrella repo
   bizconnect register init|pull|upsert|open|status|resolve|journal   Notion open-points register (review feedback)
   bizconnect docreg  init|log|list|pull   Notion catalogue of produced doc instances + versions

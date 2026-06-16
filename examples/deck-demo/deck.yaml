@@ -1,0 +1,29 @@
+# deck-demo — a tiny fixture for off-Windows smoke-testing of the `deck` connector.
+#
+# Validates the enriched slide-spec schema (deck.py `validate_spec`) and exercises the
+# COM-free asset step (_deck_assets.generate_assets) — charts/matrices render to PNG.
+# No template.pptx ships: the actual COM render (`deck build`/`deck preview`) is Windows +
+# PowerPoint only and is deliberately NOT smoke-tested here (see README.md).
+#
+# `template` still points at the conventional path so the schema is complete and the file
+# round-trips, but it is unused by the validate + asset-gen smoke test.
+
+template: 05.deck/template.pptx        # Windows-only COM render uses this; not needed off-Windows
+output:   final/deck.pptx
+slides_dir: .                          # the *.slide.json fixtures live alongside this deck.yaml
+order: [S01, S02, S03]                 # deck narrative order (here 1:1 with the three fixtures)
+preview: {width: 1920, height: 1080, pdf: true}
+
+archetypes:
+  chart:
+    source_slide: "Chart"
+    fields:  {headline: "Title", subhead: "Subtitle", takeaway: "Takeaway"}
+    anchors: {chart: "ChartArea"}      # AddChart2/AddPicture placed at this placeholder's box; placeholder deleted
+  table:
+    source_slide: "Table"
+    fields:  {headline: "Title", takeaway: "Takeaway"}
+    anchors: {table: "TableArea"}
+  matrix:
+    source_slide: "Matrix"
+    fields:  {headline: "Title", subhead: "Subtitle"}
+    anchors: {matrix: "MatrixArea"}

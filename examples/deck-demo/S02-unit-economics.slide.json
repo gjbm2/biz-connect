@@ -1,0 +1,21 @@
+{
+  "id": "S02",
+  "section": "S2",
+  "archetype": "table",
+  "headline": "Pilot unit economics by site type",
+  "subhead": null,
+  "takeaway": "Commercial-rooftop sites reach contribution-positive in month 9; industrial in month 14.",
+  "table": {
+    "headers": ["Site type", "Sites", "Avg kW", "Gross margin", "Payback (mo)"],
+    "rows": [
+      ["Commercial rooftop", "12", "85", "62%", "9"],
+      ["Industrial load", "5", "340", "54%", "14"],
+      ["Multifamily", "8", "60", "48%", "17"],
+      ["Municipal", "3", "120", "57%", "12"]
+    ],
+    "note": "Pilot cohort actuals, Q1-Q4 2025 (n=28 sites)"
+  },
+  "speaker_notes": "Payback figures are pilot actuals, not modelled projections.",
+  "backup_refs": ["research-library/B/B2-pilot-cohort.md", "DB:Pilots"],
+  "sources": [2]
+}

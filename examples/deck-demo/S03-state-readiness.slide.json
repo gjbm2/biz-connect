@@ -1,0 +1,28 @@
+{
+  "id": "S03",
+  "section": "S3",
+  "archetype": "matrix",
+  "headline": "State regulatory readiness for third-party flexibility",
+  "subhead": "Status by market mechanism, top launch states",
+  "takeaway": "California and Texas are open across all four mechanisms; New York pending on capacity participation.",
+  "matrix": {
+    "rows": ["California", "Texas", "New York", "Massachusetts", "Illinois"],
+    "cols": ["Demand response", "Storage arbitrage", "Capacity markets", "Ancillary services"],
+    "cells": [
+      ["★", "★", "★", "★"],
+      ["★", "★", "★", "★"],
+      ["★", "★", "○", "●"],
+      ["★", "●", "○", "●"],
+      ["●", "●", "○", "○"]
+    ],
+    "legend": {
+      "★": "Open — third parties may participate directly",
+      "●": "Partial — participation via aggregator only",
+      "○": "Closed — no third-party access as of 2025"
+    },
+    "render": "image"
+  },
+  "speaker_notes": "Cell states reflect tariff filings current as of the date in the note.",
+  "backup_refs": ["research-library/C/C1-state-tariffs.md", "DB:States"],
+  "sources": [3, 5]
+}

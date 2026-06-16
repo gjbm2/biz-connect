@@ -14,6 +14,7 @@ Targets (per-item targets are parameterised over the items in your `pipeline.yam
     assemble:<id>   (code) evidence pack for an item   -> <build>/<id>.context.md
     spec:<id>       (llm)  the item's argument guide    -> <local_dir>/<id>.md   (an INPUT — see WARNING)
     draft:<id>      (llm)  the item's answer            -> <answers_dir>/<id>.md (an OUTPUT)
+    slide:<id>      (llm)  the item's slide-spec (JSON) -> <slides_dir>/<id>.slide.json (an OUTPUT)
     critique:<id>   (llm)  adversarial review           -> <build>/<id>.critique.gen.md
     ladder          (llm)  front matter: template+intro over answers -> <submission> (an OUTPUT)
     lint            (code) completeness / provenance    -> <build>/lint-report.md
@@ -66,6 +67,7 @@ STAGES = {
     "spec":     {"owner": "llm",  "per_item": True},
     "draft":    {"owner": "llm",  "per_item": True},
     "critique": {"owner": "llm",  "per_item": True},
+    "slide":    {"owner": "llm",  "per_item": True},
     "ladder":   {"owner": "llm",  "per_item": False},
     "lint":     {"owner": "code", "per_item": False},
     "render":   {"owner": "code", "per_item": False},
@@ -220,6 +222,8 @@ def inputs_for(cfg, stage, pid=None):
         return ["%s/spec.md" % P, G, items_src] + ([idx] if idx else []) + ["%s/%s.context.md" % (B, pid)] + reg
     if stage == "draft":
         return ["%s/draft.md" % P, G, "%s/%s.md" % (L, pid), "%s/%s.context.md" % (B, pid)] + reg
+    if stage == "slide":
+        return ["%s/slide.md" % P, G, "%s/%s.md" % (L, pid), "%s/%s.md" % (A, pid)] + reg
     if stage == "critique":
         return ["%s/critique.md" % P, G, "%s/%s.md" % (L, pid), "%s/%s.md" % (A, pid)] + reg
     if stage == "ladder":
@@ -248,6 +252,7 @@ def inputs_for(cfg, stage, pid=None):
 def output_for(cfg, stage, pid=None):
     L = cfg.loc("local_dir", "context/items")
     A = cfg.loc("answers_dir", "answers")
+    S = cfg.loc("slides_dir", "slides")
     B = cfg.build_dir
     FB = cfg.loc("feedback_dir", "%s/feedback" % B)
     return {
@@ -255,6 +260,7 @@ def output_for(cfg, stage, pid=None):
         "assemble": "%s/%s.context.md" % (B, pid),
         "spec":     "%s/%s.md" % (L, pid),
         "draft":    "%s/%s.md" % (A, pid),
+        "slide":    "%s/%s.slide.json" % (S, pid),
         "critique": "%s/%s.critique.gen.md" % (B, pid),
         "ladder":   cfg.loc("submission", "%s/submission.md" % B),
         "lint":     "%s/lint-report.md" % B,
@@ -269,7 +275,9 @@ def output_for(cfg, stage, pid=None):
 def canonical_for(cfg, stage, pid=None):
     L = cfg.loc("local_dir", "context/items")
     A = cfg.loc("answers_dir", "answers")
+    S = cfg.loc("slides_dir", "slides")
     return {"spec": "%s/%s.md" % (L, pid), "draft": "%s/%s.md" % (A, pid),
+            "slide": "%s/%s.slide.json" % (S, pid),
             "ladder": cfg.loc("submission"), "digest": cfg.loc("brief")}.get(stage)
 
 
@@ -277,6 +285,7 @@ def gen_for(cfg, stage, pid=None):
     B = cfg.build_dir
     FB = cfg.loc("feedback_dir", "%s/feedback" % B)
     return {"spec": "%s/%s.spec.gen.md" % (B, pid), "draft": "%s/%s.draft.gen.md" % (B, pid),
+            "slide": "%s/%s.slide.gen.json" % (B, pid),
             "critique": "%s/%s.critique.gen.md" % (B, pid),
             "ladder": "%s/submission.gen.md" % B,
             "coherence": "%s/coherence.gen.md" % B,
@@ -443,7 +452,7 @@ def assemble_prompt(cfg, stage, raw, pid):
         fmt = cfg.loc("front_matter_template")
         m["TEMPLATE"] = (cfg.read(fmt) if fmt else None) or "(no front-matter template configured)"
         m["OPEN_POINTS"] = _open_points(cfg, lambda q: "front-matter" in q, "front-matter")
-    if stage in ("spec", "draft", "critique"):
+    if stage in ("spec", "draft", "critique", "slide"):
         m["OPEN_POINTS"] = open_points_for(cfg, raw, pid)
     if stage == "assimilate":
         FB = cfg.loc("feedback_dir", "%s/feedback" % B)
@@ -558,18 +567,23 @@ def clean_for_render(text):
     return _strip_inline_markers(body).rstrip()
 
 
-def inject_question(answer_text, qtext):
-    """Place the source question as a subhead directly under the answer's first heading."""
-    if not qtext:
+def inject_question(answer_text, qtext, label=""):
+    """Place the item's source text as a subhead directly under the answer's first heading.
+    `label` is the bold lead-in (e.g. "Ofgem's question.", "Section.") taken from
+    pipeline.yaml `item_subhead_label`; when empty the subhead is omitted entirely, so a
+    non-consultation document (e.g. a launch plan) renders without a consultation lead-in."""
+    if not qtext or not label:
         return answer_text
+    sub = "> **%s** %s" % (label.strip(), qtext.strip())
+    marker = label.strip().lower()
     lines = answer_text.split("\n")
     for i, ln in enumerate(lines):
         if ln.lstrip().startswith("#"):
-            if i + 1 < len(lines) and "question." in lines[i + 1].lower():
+            if i + 1 < len(lines) and marker in lines[i + 1].lower():
                 return answer_text
-            lines[i + 1:i + 1] = ["", "> **Ofgem's question.** %s" % qtext.strip()]
+            lines[i + 1:i + 1] = ["", sub]
             return "\n".join(lines)
-    return "> **Ofgem's question.** %s\n\n%s" % (qtext.strip(), answer_text)
+    return "%s\n\n%s" % (sub, answer_text)
 
 
 def parse_open_points(text, qid):
@@ -672,7 +686,8 @@ def run_render(cfg):
     for it in load_items(cfg):
         a = cfg.read("%s/%s.md" % (A, it["pad"]))
         if a:
-            parts += [inject_question(clean_for_render(a), it.get("text", "")), "", "---", ""]
+            parts += [inject_question(clean_for_render(a), it.get("text", ""),
+                                      cfg.g("item_subhead_label", "")), "", "---", ""]
     cfg.ap(final).write_text("\n".join(parts), encoding="utf-8")
     return "wrote %s" % final
 
@@ -884,6 +899,11 @@ def cmd_accept(cfg, args):
         out = output_for(cfg, stage, pid)
         if cfg.sha(out) is None:
             print("  ! %s — output %s missing; not accepted" % (tid(stage, pid), out)); continue
+        if out.endswith(".json"):                    # JSON-output stages (e.g. slide): must parse
+            try:
+                json.loads(cfg.read(out) or "")
+            except Exception as e:
+                print("  ! %s — %s is not valid JSON (%s); not accepted" % (tid(stage, pid), out, e)); continue
         man[tid(stage, pid)] = {"inputs": current_inputs(cfg, stage, pid)}
         print("  ✓ accepted %s" % tid(stage, pid))
     save_manifest(cfg, man)

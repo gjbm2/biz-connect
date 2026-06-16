@@ -6,7 +6,13 @@ google-api-python-client>=2.100
 google-auth>=2.20
 ruamel.yaml>=0.18
 
-# --- Phase 2 connectors (PPTX / XLSX / DOCX), added when those land ---
-# python-pptx>=0.6.23
+# deck connector (PowerPoint via COM) — Windows only; the marker skips it elsewhere.
+pywin32>=306; sys_platform == "win32"
+
+# deck asset generation (_deck_assets.py) — charts + matrix grid -> PNG, pure Python
+# (no COM), so it renders anywhere incl. off-Windows. Kept light: matplotlib only.
+matplotlib>=3.7
+
+# --- Phase 2 connectors (XLSX / DOCX), added when those land ---
 # openpyxl>=3.1
 # python-docx>=1.1
