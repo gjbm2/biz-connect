@@ -1,6 +1,6 @@
 {
   "name": "biz-connect",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Connect a repo to business services: Google Drive/Docs <-> local Markdown sync, Notion, Google Sheets, and standardized git flow. Per-repo bindings live in connections.yaml; credentials live in a per-user central store.",
   "author": {
     "name": "Greg Marsh",
