@@ -314,3 +314,41 @@ def test_verifier_runid_and_causal_and_failclosed():
     bad_cause = "---\ndiff_run_id: wbdiff2-abc123\n---\nFX drove revenue +5.5% {C02} {H01}."
     assert xv.verify(bad_cause, d)["status"] == "FAIL"          # weak causal edge
     assert xv.verify("no front matter here", d)["status"] == "FAIL"   # fail-closed
+
+
+# ---- regression tests for the review fixes ----
+
+def test_classify_unit_date_locale_and_quoted_currency():
+    assert xd.classify_unit("[$-409]m/d/yyyy")[0] == "date"          # locale $, not currency
+    assert xd.classify_unit('[$-409]#,##0')[0] in ("integer", "number")  # locale only
+    assert xd.classify_unit('"£"#,##0')[:2] == ("currency", "£")     # quoted-literal currency
+    assert xd.classify_unit('[$£-809] #,##0')[:2] == ("currency", "£")
+
+
+def test_delta_negative_base_has_no_misleading_percent():
+    d = xd._delta(-244_891_153, -274_959_995, "currency", "currency")
+    assert "delta_pct" not in d and "delta_display" not in d         # abs only; caller renders
+    assert d["delta_abs"] < 0
+
+
+def test_as_of_col_prefers_total_over_month_with_year():
+    view = SheetView(
+        {(1, 1): "Item", (1, 2): "FY2025 Total", (1, 3): "Jan 2026",
+         (2, 1): "Revenue", (2, 2): 1000, (2, 3): 80},
+        {(1, 1): "Item", (1, 2): "FY2025 Total", (1, 3): "Jan 2026",
+         (2, 1): "Revenue", (2, 2): 1000, (2, 3): 80})
+    assert xd._as_of_col(view, 2, [2, 3]) == 2                       # the FY total, not Jan-2026
+
+
+def test_role_excludes_cost_lines_from_output():
+    assert _sv({(1, 1): "Cost of Sales", (1, 2): 5}).classify_role(1)[0] != "output"
+
+
+def test_verifier_bare_number_and_unit_dimension():
+    d = _mini_diff()
+    # a fabricated BARE number must FAIL (no comma/symbol must not let it escape)
+    assert xv.verify("---\ndiff_run_id: wbdiff2-abc123\n---\nRevenue was 777777777 this year.", d)["status"] == "FAIL"
+    # a percent token may not be grounded by an absolute fact value of the same digits
+    assert xv.verify("---\ndiff_run_id: wbdiff2-abc123\n---\nMargin hit 105500000%.", d)["status"] == "FAIL"
+    # front-matter bypass closed: a prose line starting with 'schema_version' is still checked
+    assert xv.verify("---\ndiff_run_id: wbdiff2-abc123\n---\nschema_version fabrications cost $888,888,888.", d)["status"] == "FAIL"

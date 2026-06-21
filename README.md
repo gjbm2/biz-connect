@@ -187,7 +187,7 @@ everyone's update nudge, so bump it on every meaningful change.
 | `gdoc` | `push pull status link unlink list comments diff resolve` | local Markdown ↔ Google Doc; `comments`/`diff`/`resolve` capture review feedback |
 | `notion` | `whoami check read upload fill` | media upload + headless read; text via the Notion MCP |
 | `sheet` | `whoami check read write append clear create` | service-account Sheets r/w |
-| `xlsx` | `diff OLD NEW [-o OUT] [--formulas] [--values]` | structural, row-aligned diff of two `.xlsx` workbooks (local; no credentials) |
+| `xlsx` | `diff OLD NEW [--json J] [--summary S] [-o MD] [--formulas] [--values]` · `verify NARRATIVE.md DIFF.json` | row+column-aligned diff of two `.xlsx` workbooks -> a deterministic JSON fact graph (headline metrics, roles, causal links) + capped Markdown; `verify` is the anti-hallucination gate. Local; no credentials. The `workbook-diff` skill turns this into a verified narrative |
 | `git` | `status save sync pr` | branch-off-protected, co-author trailer, rebase-sync, PR |
 | `compose` | `status run accept scaffold graph` | config-driven document-composition pipeline (`pipeline.yaml`); `inputs` syncs external sources; `assimilate`/`digest` close the feedback loop |
 | `register` | `init pull upsert open status resolve journal` | Notion-DB open-points register for review feedback (the feedback roundtrip's spine) |
@@ -286,7 +286,8 @@ bizconnect/
   config.py        central store + connections.yaml resolution
   cli.py           `bizconnect <service> <verb>` dispatch + doctor/init
   _google.py       shared service-account auth (+ optional impersonation)
-  xlsxdiff.py      structural workbook-diff engine (openpyxl; no external service)
+  xlsxdiff.py      workbook-diff engine: fact graph, headlines, causal links (openpyxl)
+  xlsxverify.py    mechanical narrative verifier (anti-hallucination gate)
   connectors/      gdocs.py  notion.py  gsheets.py  xlsx.py  git.py  compose.py  register.py  docreg.py
 scripts/bizconnect.py   self-bootstrapping launcher (creates the central-store venv)
 skills/                 plugin skills (one dir per affordance)

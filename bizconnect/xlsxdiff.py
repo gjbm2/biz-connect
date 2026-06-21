@@ -128,13 +128,31 @@ _CURRENCY = ("$", "£", "€", "¥", "₹", "₩")
 _SCALE_SUFFIX = {0: "", 1: "k", 2: "m", 3: "bn", 4: "tn"}
 
 
+def _core(nf):
+    """First (positive) section of a format with bracket tokens, quoted literals
+    and escapes removed -- so locale tags like [$-409] / [$£-809] / [Red] don't
+    get mistaken for currency or digits."""
+    s = (nf or "").split(";")[0]
+    return re.sub(r'\[[^\]]*\]|"[^"]*"|\\.', "", s)
+
+
+def _bracket_currency(nf):
+    """Currency symbol carried inside a [$SYM-locale] token, if any. A bare
+    [$-409] (locale only) is NOT a currency."""
+    for m in re.finditer(r"\[\$([^\]\-]*)-?[0-9A-Fa-f]*\]", nf or ""):
+        for c in _CURRENCY:
+            if c in m.group(1):
+                return c
+    return None
+
+
 def _decimals(nf):
-    m = re.search(r"\.([0#]+)", nf)
+    m = re.search(r"\.([0#]+)", _core(nf))
     return len(m.group(1)) if m else 0
 
 
 def _scale_commas(nf):
-    m = re.search(r"[0#](,+)(?=[^0#,]*$)", nf)
+    m = re.search(r"[0#](,+)(?=[^0#,]*$)", _core(nf))
     return len(m.group(1)) if m else 0
 
 
@@ -143,26 +161,28 @@ def classify_unit(number_format):
 
     unit_kind in {percent, currency, scaled, integer, number, date, text, unknown}.
     Conservative: an unrecognised format yields 'unknown' (never a wrong unit)."""
-    if not number_format or number_format in ("General",):
+    if not number_format or number_format == "General":
         return ("unknown", None, 0)
-    s = number_format.split(";")[0]
-    if "%" in s:
+    core = _core(number_format)
+    if "%" in core:
         return ("percent", None, 0)
-    sym = next((c for c in _CURRENCY if c in s), None)
-    scale = _scale_commas(s)
+    if _is_date_core(core):
+        return ("date", None, 0)
+    # currency: a [$SYM-locale] token, or a bare/quoted symbol once locale tokens
+    # are stripped (so the '$' inside a [$-409] date/number locale isn't mistaken).
+    nobracket = re.sub(r"\[[^\]]*\]", "", number_format.split(";")[0])
+    sym = _bracket_currency(number_format) or next((c for c in _CURRENCY if c in nobracket), None)
+    scale = _scale_commas(number_format)
     if sym:
         return ("currency", sym, scale)
-    if _is_date_format(s):
-        return ("date", None, 0)
     if scale:
         return ("scaled", None, scale)
-    if re.search(r"[0#]", s):
-        return ("integer" if "." not in s else "number", None, 0)
+    if re.search(r"[0#]", core):
+        return ("integer" if "." not in core else "number", None, 0)
     return ("unknown", None, 0)
 
 
-def _is_date_format(s):
-    core = re.sub(r'\[[^\]]*\]|"[^"]*"|\\.', "", s)
+def _is_date_core(core):
     return bool(re.search(r"[ymdhs]", core, re.I)) and not re.search(r"[0#]", core)
 
 
@@ -191,22 +211,21 @@ def render_display(raw, number_format=None):
     if isinstance(raw, float) and not isfinite(raw):
         return str(raw)
     kind, sym, scale = classify_unit(number_format)
-    pos = (number_format or "General").split(";")[0]
+    core = _core(number_format)
+    thousands = bool(re.search(r"#,#|0,0|#,##0", core))
     if kind == "percent":
-        dec = _decimals(pos)
+        dec = _decimals(number_format)
         d = _round_hu(raw * 100, dec)
         return f"{d:.{dec}f}%"
     if kind in ("currency", "scaled"):
-        dec = _decimals(pos)
+        dec = _decimals(number_format)
         val = raw / (1000 ** scale) if scale else raw
         d = _round_hu(abs(val), dec)
-        thousands = bool(re.search(r"#,#|0,0|#,##0", pos))
         body = f"{d:,.{dec}f}" if thousands else f"{d:.{dec}f}"
         out = f"{sym or ''}{body}{_SCALE_SUFFIX.get(scale, '')}"
         return f"({out})" if (raw < 0 and "(" in (number_format or "")) else (f"-{out}" if raw < 0 else out)
     if kind in ("integer", "number"):
-        dec = _decimals(pos)
-        thousands = bool(re.search(r"#,#|0,0|#,##0", pos))
+        dec = _decimals(number_format)
         d = _round_hu(raw, dec)
         return f"{d:,.{dec}f}" if thousands else f"{d:.{dec}f}"
     # unknown / general -> compact generic
@@ -244,6 +263,22 @@ def formula_text(v):
     if isinstance(v, ArrayFormula):
         return v.text
     return v
+
+
+def _is_num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _input_kind(old, new):
+    """Classify a literal-cell edit so the narrative can separate substantive
+    assumption changes from the label/relabel churn a restructure produces."""
+    if _is_num(old) or _is_num(new):
+        if old is None:
+            return "value_set"
+        if new is None:
+            return "value_cleared"
+        return "value"
+    return "text"
 
 
 def _is_error(v):
@@ -361,18 +396,24 @@ def _iter_cells(ws):
 
 
 def load_book(path):
-    """Load one workbook -> LoadedBook. Raises WorkbookLoadError on failure."""
+    """Load one workbook -> LoadedBook. Raises WorkbookLoadError on ANY failure
+    (bad zip, malformed XML, encrypted, lazy parse errors) so compare() can
+    return status='aborted' rather than crash on an untrusted file."""
     _validate_format(path)
     _zip_bomb_guard(path)
     try:
-        wb_f = openpyxl.load_workbook(path, data_only=False, read_only=True)
-        wb_v = openpyxl.load_workbook(path, data_only=True, read_only=True)
-    except (InvalidFileException, zipfile.BadZipFile, KeyError, OSError, ValueError) as e:
+        return _load_book_inner(path)
+    except WorkbookLoadError:
+        raise
+    except Exception as e:
         msg = str(e)
-        code = "CORRUPT"
-        if "password" in msg.lower() or "encrypt" in msg.lower():
-            code = "ENCRYPTED"
-        raise WorkbookLoadError(code, path, f"openpyxl could not open the workbook: {msg}")
+        code = "ENCRYPTED" if ("password" in msg.lower() or "encrypt" in msg.lower()) else "CORRUPT"
+        raise WorkbookLoadError(code, path, f"could not parse the workbook: {msg}")
+
+
+def _load_book_inner(path):
+    wb_f = openpyxl.load_workbook(path, data_only=False, read_only=True)
+    wb_v = openpyxl.load_workbook(path, data_only=True, read_only=True)
 
     order = list(wb_f.sheetnames)
     content, formats, coverage = {}, {}, {}
@@ -433,9 +474,13 @@ def load_book(path):
 _OUTPUT_LEX = re.compile(
     r"\b(net income|net profit|ebitda|ebit|free cash ?flow|fcf|npv|irr|revenue|"
     r"sales|turnover|gross profit|operating profit|profit before tax|pbt|"
-    r"net cash|contribution|gross margin|ebitda margin|cac|ltv|arpu)\b", re.I)
+    r"net cash|contribution|gross margin|ebitda margin|arpu)\b", re.I)
+# a cost/expense qualifier disqualifies a label from 'output' (e.g. "Cost of Sales"
+# contains "sales" but is a cost line, not the revenue headline).
+_COST_LEX = re.compile(
+    r"\b(cost|costs|cogs|expense|opex|capex|withdrawal|tax|deprecia|amorti|"
+    r"interest|overhead|spend)\b", re.I)
 _TOTAL_LEX = re.compile(r"\b(total|subtotal|sum of|grand total)\b", re.I)
-_MARGIN_LEX = re.compile(r"\b(margin|%|growth|rate)\b", re.I)
 
 
 class SheetView:
@@ -552,7 +597,7 @@ class SheetView:
                                  for v in content.values())
         sum_shape = any(isinstance(v, str) and re.match(r"=\s*(SUM|SUBTOTAL)\b", v, re.I)
                         for v in content.values())
-        if _OUTPUT_LEX.search(label):
+        if _OUTPUT_LEX.search(label) and not _COST_LEX.search(label):
             conf = "high" if (has_formula or sum_shape) else "medium"
             return ("output", conf)
         if _TOTAL_LEX.search(label) or sum_shape:
@@ -1068,15 +1113,14 @@ def _delta(old_raw, new_raw, old_kind, new_kind):
         return out
     da = new_raw - old_raw
     out["delta_abs"] = da
-    kind = new_kind
-    if kind == "percent":
+    if new_kind == "percent":
         out["delta_pp"] = da * 100
         out["delta_display"] = f"{da * 100:+.2f}pp"
-    elif old_raw not in (0, 0.0):
-        out["delta_pct"] = da / abs(old_raw)
-        out["delta_display"] = f"{da / abs(old_raw) * 100:+.1f}%"
-    else:
-        out["delta_display"] = f"+{render_display(da)}" if da >= 0 else render_display(da)
+    elif old_raw > 0 and new_raw > 0:
+        out["delta_pct"] = da / old_raw
+        out["delta_display"] = f"{da / old_raw * 100:+.1f}%"
+    # negative or sign-flipping base: a percent change is misleading (costs shown
+    # as negatives, losses, sign flips) -> emit delta_abs only; callers render it
     return out
 
 
@@ -1162,6 +1206,7 @@ def emit_json(wd: WorkbookDiff) -> dict:
                 u = _unit_fields(vb, rb, nc, nf)
                 old_kind = classify_unit(va.fmt_at(ra, oc))[0]
                 add(sheet=name, type="input", tier="cause", role=role, role_confidence=rconf,
+                    change_kind=_input_kind(it["old"], it["new"]),
                     old_addr=addr(ra, oc), new_addr=addr(rb, nc), label=label,
                     old_raw=it["old"], new_raw=it["new"],
                     old_display=render_display(it["old"], va.fmt_at(ra, oc)),
@@ -1387,15 +1432,19 @@ def _extract_headlines(wd, facts):
             nf = vb.fmt_at(rb, nc)
             kind, sym, scale = classify_unit(nf)
             src = fact_by_addr.get((name, addr(rb, nc)))
+            d = _delta(old_raw, new_raw, kind, kind)
+            if "delta_display" not in d and "delta_abs" in d:    # negative-base fallback
+                da = d["delta_abs"]
+                d["delta_display"] = ("+" if da >= 0 else "-") + render_display(abs(da), nf)
             candidates.append({
                 "sheet": name, "label": label, "role": role, "confidence": rconf,
                 "as_of_col_header": vb.col_header(nc) or get_column_letter(nc),
                 "unit_kind": kind, "old_raw": old_raw, "new_raw": new_raw,
                 "old_display": render_display(old_raw, nf), "new_display": render_display(new_raw, nf),
-                **_delta(old_raw, new_raw, kind, kind),
+                **d,
                 "source_fact_id": src["id"] if src else None,
                 "_mat": _headline_materiality(old_raw, new_raw, kind, role, rev_scale),
-                "_key": (name, label.lower())})
+                "_key": (name, label.lower(), nc)})
 
     best = {}
     for c in candidates:
@@ -1429,7 +1478,14 @@ def _sheet_revenue_scale(view, cols):
 
 def _headline_materiality(old_raw, new_raw, kind, role, rev_scale):
     if kind == "percent":
-        base = abs(new_raw - old_raw) * 100 / 5.0       # 5pp move == max
+        dpp = abs(new_raw - old_raw) * 100
+        # an implausible percent (>200%) or huge swing is almost always a
+        # degenerate early-period ratio, not the headline -> down-weight it so it
+        # cannot dominate a real currency move.
+        if abs(old_raw) > 2 or abs(new_raw) > 2 or dpp > 30:
+            base = 0.05
+        else:
+            base = min(0.6, dpp / 10.0)
     elif rev_scale:
         base = abs(new_raw - old_raw) / rev_scale
     else:
@@ -1448,10 +1504,18 @@ def _as_of_col(view, r, cols):
                and isfinite(rv.get(c))]
     if not numeric:
         return None
-    for c in reversed(numeric):                          # explicit total/year header wins
-        h = view.col_header(c).lower()
-        if re.search(r"\b(total|annual|fy\d*|full[\s-]*year|cumulative|20\d\d)\b", h):
-            return c
+    month = r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|q[1-4]|wk|week|month)\b"
+    total = r"\b(total|annual|full[\s-]*year|cumulative|fy)\b"
+    # explicit total/annual header (not a month column) wins; rightmost such
+    tot = [c for c in numeric if re.search(total, view.col_header(c).lower())
+           and not re.search(month, view.col_header(c).lower())]
+    if tot:
+        return tot[-1]
+    # a bare 4-digit year, but only if the header is NOT a monthly label
+    yr = [c for c in numeric if re.search(r"\b20\d\d\b", view.col_header(c).lower())
+          and not re.search(month, view.col_header(c).lower())]
+    if yr:
+        return yr[-1]
     run = [numeric[0]]                                   # else first contiguous same-unit run
     for prev, c in zip(numeric, numeric[1:]):
         same_unit = classify_unit(view.fmt_at(r, c))[0] == classify_unit(view.fmt_at(r, prev))[0]
@@ -1574,23 +1638,8 @@ def render_markdown(wd: WorkbookDiff, *, values=False, formulas=False, max_rows=
 
     if headlines is None:
         headlines = _extract_headlines(wd, [])
-    if headlines:
-        L.append("## Headline impact")
-        L.append("")
-        L.append("| Metric | As of | Old | New | Change |")
-        L.append("|---|---|---|---|---|")
-        for h in headlines[:15]:
-            L.append(f"| {md_escape(h['label'])} | {md_escape(h['as_of_col_header'])} | "
-                     f"{md_escape(h['old_display'])} | {md_escape(h['new_display'])} | "
-                     f"{md_escape(h.get('delta_display', ''))} |")
-        L.append("")
-        if causal:
-            L.append("_Drivers (dependency-path proven):_ "
-                     + "; ".join(f"{md_escape(c.get('cause_label') or c['cause_fact_id'])} -> "
-                                 f"{', '.join(c['effect_headline_ids'])}" for c in causal[:6]))
-            L.append("")
 
-    L.append("## Detail")
+    L.append("## What changed")
     L.append("")
     any_detail = False
     for name in wd.common:
@@ -1653,21 +1702,33 @@ def render_markdown(wd: WorkbookDiff, *, values=False, formulas=False, max_rows=
             _more(L, sd.deleted, max_rows, "deleted rows")
             L.append("")
 
-        # inputs, ranked by materiality
-        input_items = []
+        # inputs: substantive value/assumption edits vs the label-relabel churn
+        value_items, text_items = [], []
         for (ra, rb, inputs, _v, _f) in sd.changed:
             for it in inputs:
-                input_items.append((ra, rb, it))
-        if input_items:
-            L.append("**Inputs changed**")
+                (text_items if _input_kind(it["old"], it["new"]) == "text"
+                 else value_items).append((ra, rb, it))
+        if value_items:
+            L.append("**Assumptions & values changed**")
             L.append("")
-            for ra, rb, it in _cap(input_items, max_rows):
+            for ra, rb, it in _cap(value_items, max_rows):
                 lab = vb.label(rb) or va.label(ra) or "(no label)"
                 a = addr(rb, it["new_col"])
                 od = render_display(it["old"], va.fmt_at(ra, it["old_col"]))
                 nd = render_display(it["new"], vb.fmt_at(rb, it["new_col"]))
                 L.append(f"- {a} **{md_escape(lab)}**: `{md_escape(od)}` => `{md_escape(nd)}`")
-            _more(L, input_items, max_rows, "input changes")
+            _more(L, value_items, max_rows, "value changes")
+            L.append("")
+        if text_items:
+            shown = min(len(text_items), max_rows or 6)
+            L.append(f"**Label / text changes ({len(text_items)})** "
+                     "— mostly the relabel cascade from the row restructure above")
+            L.append("")
+            for ra, rb, it in text_items[:shown]:
+                a = addr(rb, it["new_col"])
+                L.append(f"- {a}: `{md_escape(str(it['old']))}` => `{md_escape(str(it['new']))}`")
+            if len(text_items) > shown:
+                L.append(f"- ... and {len(text_items) - shown} more label changes")
             L.append("")
 
         if formulas:
@@ -1705,6 +1766,25 @@ def render_markdown(wd: WorkbookDiff, *, values=False, formulas=False, max_rows=
 
     if not any_detail and not wd.added_sheets and not wd.removed_sheets:
         L.append("_No structural or content differences found._")
+
+    # Net effect — secondary: what the edits did downstream (not the point of the
+    # diff, which is WHAT changed above, but useful context).
+    if headlines:
+        L.append("")
+        L.append("## Net effect (downstream)")
+        L.append("")
+        L.append("| Metric | As of | Old | New | Change |")
+        L.append("|---|---|---|---|---|")
+        for h in headlines[:12]:
+            L.append(f"| {md_escape(h['label'])} | {md_escape(h['as_of_col_header'])} | "
+                     f"{md_escape(h['old_display'])} | {md_escape(h['new_display'])} | "
+                     f"{md_escape(h.get('delta_display', ''))} |")
+        L.append("")
+        if causal:
+            L.append("_Drivers (dependency-path proven):_ "
+                     + "; ".join(f"{md_escape(c.get('cause_label') or c['cause_fact_id'])} -> "
+                                 f"{', '.join(c['effect_headline_ids'])}" for c in causal[:6]))
+            L.append("")
     return "\n".join(L)
 
 

@@ -1,22 +1,23 @@
 ---
 name: workbook-diff
-description: Structural, grounded diff of two Excel .xlsx workbooks, turned into a high-quality narrative. Use when the user wants to compare two spreadsheets/workbooks, see what changed between two versions of an Excel model, diff two .xlsx files, review someone's edits to a financial model, or understand the effect of changes. Runs a deterministic code-based diff (the ground truth) then writes a verified, human-readable narrative explaining what changed and its effect.
+description: Structural, grounded diff of two Excel .xlsx workbooks, turned into a human-readable account of WHAT changed. Use when the user wants to compare two spreadsheets/workbooks, see what changed between two versions of an Excel model, diff two .xlsx files, or review someone's edits to a financial model. Runs a deterministic code-based diff (the ground truth) then writes a verified narrative that explains the actual edits — structural changes, assumption/value changes, formula-logic changes — with downstream effect as a brief footnote.
 allowed-tools: Bash(python *), Read, Write
 ---
 
-# Workbook diff -> grounded narrative
+# Workbook diff -> grounded "what changed" narrative
 
-Two stages. **Stage 1 is code** — a deterministic diff that aligns rows AND columns
-(so an inserted row/column is one fact, not thousands of shifted formulas), captures
-number formats, classifies row roles, extracts **headline metrics**, and traces changed
-inputs to the outputs they drive. It emits a JSON *fact graph* — the single source of
-truth. **Stage 2 is you** — you turn those facts into a narrative that explains what
-changed and the effect, then a **mechanical verifier proves every figure is grounded**.
+**The point is to let a reader understand WHAT changed** — every edit, clearly — not to
+sell the effect. Two stages. **Stage 1 is code** — a deterministic diff that aligns rows
+AND columns (so an inserted row/column is one fact, not thousands of shifted formulas),
+captures number formats, and separates the substantive edits (assumptions/values) from the
+relabel cascade a restructure produces. It emits a JSON *fact graph* — the single source of
+truth. **Stage 2 is you** — you turn those facts into a clear account of the changes, then a
+**mechanical verifier proves every figure is grounded**.
 
 The cardinal rule: **the narrative may only state numbers that appear in the JSON, and
-must cite the fact each one comes from. You never do arithmetic — all deltas, percentages
-and margins are precomputed.** A separate verifier enforces this; a narrative that invents
-or miscites a figure is rejected.
+must cite the fact each one comes from. You never do arithmetic — all deltas are
+precomputed.** A separate verifier enforces this; a narrative that invents or miscites a
+figure is rejected.
 
 ## Stage 1 — run the deterministic diff
 
@@ -54,34 +55,38 @@ diff_run_id: <copy diff_run_id from diff.json verbatim>
 # What changed: OLD.xlsx -> NEW.xlsx
 
 ## Summary
-<3-5 sentences. Figures ONLY from headline_metrics, each with its {Hnn} citation.>
+<2-4 sentences on the actual edits at a high level: the structural rework and the key
+ assumption/value changes. About WHAT was done, not the P&L effect.>
 
-## Headline impact
-| Metric | Old | New | Change |   <- straight from headline_metrics, one {Hnn} per row>
+## What changed   <- THE CORE; be complete and concrete>
+### Assumptions & values changed
+<every `input` fact with change_kind value/value_set/value_cleared — old => new, cited
+ {Fnnnn}. The substantive edits (an assumption raised/cut, an input swapped/cleared).>
+### Structure
+<rows/columns/sheets inserted/deleted/moved and named-range changes — say what each is.>
+### Labels & formula logic
+<text/label changes: summarise as the relabel cascade if they come from the restructure
+ (give the count), don't enumerate all. Formula-logic changes only if you ran --formulas.>
 
-## What changed
-### Assumptions & inputs   <- from `input` facts (tier=cause), each cited {Fnnnn}>
-### Structure             <- rows/cols/sheets/named-ranges inserted/deleted/moved>
-### Formula logic         <- only if you ran --formulas; mark advisory>
-
-## What drove it
-<ONLY edges in causal_links. For a path_proven high-confidence edge you may say a cause
- "drove"/"contributed to" a headline, citing {Cnn} and the {Hnn}; otherwise hedge
- ("likely", "co-moved with"). Multiple causes can reach one headline — say "among the
- drivers". Surface effects flagged unexplained as unexplained.>
+## Net effect (brief, secondary)
+<A short paragraph or small table from headline_metrics — the downstream movement (Revenue,
+ EBITDA, margins), each figure cited {Hnn}. Tight; this is context, not the point. You MAY
+ note proven drivers from causal_links ({Cnn}->{Hnn}), hedged by confidence.>
 
 ## Caveats / what to verify
 <low-confidence regions, advisory formula changes, low-cache sheets, omitted ripple count.>
 ```
 
 **Grounding rules (the verifier checks these):**
-- Every `$`, `%`, `pp`, or thousands-grouped figure must be **copied verbatim** from a
-  fact's `*_display` / `delta_display` (not `*_raw`, not reworded, not re-rounded).
+- Every `$`, `%`, `pp`, scaled (`m`/`bn`) or thousands-grouped figure — and any bare large
+  number — must be **copied verbatim** from a fact's `*_display` / `delta_display` (not
+  `*_raw`, not reworded, not re-rounded, not a unit word like "million").
 - Every such figure carries an inline citation token — `{H02}`, `{F0369}`, `{C03}` — that
   resolves to an id in `diff.json`. Put the figure and its citation on the **same line**.
-- **Do no arithmetic.** If a number isn't already in the JSON, you may not state it.
-- Causal verbs ("drove", "because", "due to") are allowed only next to a `{Cnn}` that is
-  `path_proven` with `confidence: high`. Otherwise hedge.
+- **Do no arithmetic.** If a number isn't already in the JSON, you may not state it. A `%`
+  may not be cited from a `$` fact (the verifier checks the unit dimension).
+- Causal verbs ("drove", "because", "due to", "as a result of") are allowed only next to a
+  `{Cnn}` that is `path_proven` with `confidence: high`. Otherwise hedge.
 
 ## Stage 3 — verify, repair, deliver
 
