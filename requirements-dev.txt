@@ -1,0 +1,5 @@
+# Dev/test dependencies (not needed at runtime). Install into a throwaway venv:
+#   python -m venv .venv && .venv/Scripts/pip install -r requirements.txt -r requirements-dev.txt
+#   .venv/Scripts/python -m pytest
+-r requirements.txt
+pytest>=8.0

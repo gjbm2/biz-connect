@@ -37,9 +37,9 @@ scripts\install.ps1     # Windows
 
 (For local development on a clone, install from a path: `/plugin marketplace add C:/path/to/biz-connect`.)
 
-After the next session start, eight skills are available in **every** project:
-`gdoc-sync`, `notion-notes`, `sheet-io`, `git-flow`, `doc-pipeline`, `feedback-ingest`,
-`register`, `biz-connect-setup`.
+After the next session start, these skills are available in **every** project:
+`gdoc-sync`, `notion-notes`, `sheet-io`, `workbook-diff`, `git-flow`, `doc-pipeline`,
+`feedback-ingest`, `register`, `biz-connect-setup`.
 
 > **Restart Claude Code (start a new session) before running steps 2–3.**
 > `${CLAUDE_PLUGIN_ROOT}` is only set once the plugin is loaded; in the same session it is
@@ -187,14 +187,15 @@ everyone's update nudge, so bump it on every meaningful change.
 | `gdoc` | `push pull status link unlink list comments diff resolve` | local Markdown ↔ Google Doc; `comments`/`diff`/`resolve` capture review feedback |
 | `notion` | `whoami check read upload fill` | media upload + headless read; text via the Notion MCP |
 | `sheet` | `whoami check read write append clear create` | service-account Sheets r/w |
+| `xlsx` | `diff OLD NEW [-o OUT] [--formulas] [--values]` | structural, row-aligned diff of two `.xlsx` workbooks (local; no credentials) |
 | `git` | `status save sync pr` | branch-off-protected, co-author trailer, rebase-sync, PR |
 | `compose` | `status run accept scaffold graph` | config-driven document-composition pipeline (`pipeline.yaml`); `inputs` syncs external sources; `assimilate`/`digest` close the feedback loop |
 | `register` | `init pull upsert open status resolve journal` | Notion-DB open-points register for review feedback (the feedback roundtrip's spine) |
 | `docreg` | `init log list pull` | Notion catalogue of produced Doc instances/versions; `gdoc push --new --version` logs each major build |
 
 Plus `bizconnect doctor` / `init` / `update` / `version`. Skills (`/biz-connect:gdoc-sync`,
-`notion-notes`, `sheet-io`, `git-flow`, `doc-pipeline`, `feedback-ingest`, `register`,
-`biz-connect-setup`) wrap these for Claude.
+`notion-notes`, `sheet-io`, `workbook-diff`, `git-flow`, `doc-pipeline`, `feedback-ingest`,
+`register`, `biz-connect-setup`) wrap these for Claude.
 
 ### Google Docs ownership
 
@@ -256,6 +257,8 @@ Prioritised by reuse-cleanliness and the stated near-term needs:
 - **PPTX/XLSX building primitives** — extract the reusable shape/timeline/chart and
   formula-generation helpers from `pptx-pipeline` + the root build scripts into
   `connectors/pptx` and `connectors/xlsx` (python-pptx / openpyxl; cross-platform).
+  *(`connectors/xlsx diff` — structural workbook diff — has shipped; building
+  primitives still to extract.)*
 - **Omni (BI) → Excel** — `omni-pipeline`'s `excel_write.py` (COM-safe live edit) and
   `omni_fetch.py` are reusable once secrets move to the central store.
 - **Gmail → Notion** — `investor-comms` proves the domain-wide-delegation auth pattern;
@@ -283,9 +286,11 @@ bizconnect/
   config.py        central store + connections.yaml resolution
   cli.py           `bizconnect <service> <verb>` dispatch + doctor/init
   _google.py       shared service-account auth (+ optional impersonation)
-  connectors/      gdocs.py  notion.py  gsheets.py  git.py  compose.py  register.py  docreg.py
+  xlsxdiff.py      structural workbook-diff engine (openpyxl; no external service)
+  connectors/      gdocs.py  notion.py  gsheets.py  xlsx.py  git.py  compose.py  register.py  docreg.py
 scripts/bizconnect.py   self-bootstrapping launcher (creates the central-store venv)
 skills/                 plugin skills (one dir per affordance)
+tests/                  pytest unit + integration tests (see requirements-dev.txt)
 examples/connections.example.yaml
 requirements.txt
 ```

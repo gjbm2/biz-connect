@@ -6,7 +6,9 @@ google-api-python-client>=2.100
 google-auth>=2.20
 ruamel.yaml>=0.18
 
-# --- Phase 2 connectors (PPTX / XLSX / DOCX), added when those land ---
+# xlsx connector (workbook diff)
+openpyxl>=3.1
+
+# --- Phase 2 connectors (PPTX / DOCX), added when those land ---
 # python-pptx>=0.6.23
-# openpyxl>=3.1
 # python-docx>=1.1

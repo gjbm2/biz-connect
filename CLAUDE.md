@@ -15,8 +15,9 @@ In the Claude Code REPL:
 
 (For local development on a clone, use the path instead: `/plugin marketplace add .`)
 
-This makes six skills available in **every** project after the next session start:
-`gdoc-sync`, `notion-notes`, `sheet-io`, `git-flow`, `doc-pipeline`, `biz-connect-setup`.
+This makes the plugin's skills available in **every** project after the next session start:
+`gdoc-sync`, `notion-notes`, `sheet-io`, `workbook-diff`, `git-flow`, `doc-pipeline`,
+`feedback-ingest`, `register`, `biz-connect-setup`.
 
 The non-interactive equivalent (e.g. from a script):
 

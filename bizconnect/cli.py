@@ -16,6 +16,7 @@ from . import __version__, config
 
 SERVICES = {"gdoc": "gdocs", "gdocs": "gdocs", "notion": "notion",
             "sheet": "gsheets", "sheets": "gsheets", "gsheet": "gsheets", "git": "git",
+            "xlsx": "xlsx", "workbook": "xlsx",
             "compose": "compose", "register": "register", "docreg": "docreg",
             "secrets": "secrets", "secret": "secrets",
             "deliverable": "deliverable", "deliverables": "deliverable"}
@@ -30,6 +31,7 @@ USAGE = """biz-connect — business-service connectors for this repo.
   bizconnect gdoc   push|pull|status|link|unlink|list|comments|diff|resolve   Markdown <-> Google Docs (+ feedback capture)
   bizconnect notion whoami|check|read|upload|fill        read pages, upload local media
   bizconnect sheet  whoami|check|read|write|append|clear|create
+  bizconnect xlsx   diff OLD.xlsx NEW.xlsx [-o OUT.md] [--formulas] [--values]  structural workbook diff
   bizconnect git    status|save|sync|pr                  standardised git flow
   bizconnect compose status|run|accept|scaffold|graph    config-driven doc-composition pipeline
   bizconnect deliverable list|new <slug>  stand up / list deliverables in an umbrella repo
