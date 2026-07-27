@@ -252,8 +252,10 @@ Prioritised by reuse-cleanliness and the stated near-term needs:
 - **PPTX / XLSX** — `mcp-servers/pptx-xlsx-mcp` is a clean, secret-free MCP server (47
   COM tools). Bundle it as a plugin MCP server (`office` connector). Windows + Office
   required.
-- **DOCX** — *not yet covered anywhere*; add a Word COM server alongside the PPTX/XLSX
-  one (`win32com` → `Word.Application`), or a cross-platform `python-docx` path.
+- **DOCX** — covered for Markdown sources: `bizconnect gdoc docx <file.md> [--out P]`
+  converts via Drive (import md → Doc, export → Word; temp Doc deleted, or the bound
+  Doc reused when in sync). Editing/authoring native DOCX (a Word COM server or
+  `python-docx`) remains open.
 - **PPTX/XLSX building primitives** — extract the reusable shape/timeline/chart and
   formula-generation helpers from `pptx-pipeline` + the root build scripts into
   `connectors/pptx` and `connectors/xlsx` (python-pptx / openpyxl; cross-platform).

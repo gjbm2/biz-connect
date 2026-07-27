@@ -25,6 +25,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc list                  
 python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc push final/response.md --new --version v2.0  # NEW Doc instance for a major build
 python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc comments final/response.md --out build/feedback/feedback.bundle.md  # capture review comments
 python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc diff final/response.md     # direct edits (Doc vs local)
+python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc docx  response/draft.md [--out P]   # Markdown -> .docx (Drive convert; no binding side-effects)
 ```
 
 Run from inside the repo (the tool finds `connections.yaml` by walking up from the

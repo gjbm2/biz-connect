@@ -28,7 +28,7 @@ USAGE = """biz-connect — business-service connectors for this repo.
   bizconnect update                 check for a newer plugin version (and how to apply it)
   bizconnect version
 
-  bizconnect gdoc   push|pull|status|link|unlink|list|comments|diff|resolve   Markdown <-> Google Docs (+ feedback capture)
+  bizconnect gdoc   push|pull|status|link|unlink|list|comments|diff|resolve|docx   Markdown <-> Google Docs (+ feedback capture, .docx export)
   bizconnect notion whoami|check|read|upload|fill        read pages, upload local media
   bizconnect sheet  whoami|check|read|write|append|clear|create
   bizconnect xlsx   diff OLD.xlsx NEW.xlsx [-o OUT.md] [--formulas] [--values]  structural workbook diff

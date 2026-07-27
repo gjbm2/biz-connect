@@ -25,6 +25,7 @@ Verbs
   comments <file> [--json] [--out P]                  dump the Doc's comments (feedback capture)
   diff <file>                                         unified diff: Doc body vs local (direct edits)
   resolve <file> <commentId> [--note T]               resolve a comment thread (close-out)
+  docx <file> [--out P]                               convert Markdown -> .docx (via Drive import/export)
 """
 from __future__ import annotations
 
@@ -40,6 +41,7 @@ from .. import _google
 
 DOC_MIME = "application/vnd.google-apps.document"
 MD_MIME = "text/markdown"
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 STATE_DIR = ".bizconnect"
 STATE_FILE = "state.json"
 
@@ -800,10 +802,68 @@ def cmd_annotate(argv):
           + (f", {failed} failed" if failed else ""))
 
 
+def cmd_docx(argv):
+    """Markdown -> .docx, using Drive as the converter (import md -> Doc, export
+    Doc -> Word). If the file's bound Doc already holds exactly this content, export
+    that; otherwise convert via a throwaway Doc that is deleted afterwards — no
+    binding is written and nothing lingers in Drive."""
+    arg = _positional(argv, value_flags=("--out",))
+    if not arg:
+        sys.exit("docx needs <file.md>")
+    local = _resolve_local(arg)
+    if not local.exists():
+        sys.exit(f"local file not found: {local}")
+    out = _opt(argv, "--out")
+    out_path = _resolve_local(out) if out else local.with_suffix(".docx")
+
+    data, conn_path, root = _repo()
+    key = _rel(local, root)
+    md = local.read_bytes()
+    drive = _drive(data)
+
+    binding = _binding(data, key)
+    doc_id = binding.get("doc_id") if binding else None
+    st = _load_state(root).get("docs", {}).get(key, {})
+    reuse = bool(
+        doc_id and st.get("last_push_sha256") == _content_sha(md)
+        and st.get("synced_modified") and _modified(drive, doc_id) == st["synced_modified"])
+
+    temp_id = None
+    try:
+        if reuse:
+            export_id = doc_id
+        else:
+            from googleapiclient.http import MediaInMemoryUpload
+            media = MediaInMemoryUpload(md, mimetype=MD_MIME, resumable=False)
+            f = drive.files().create(
+                body={"name": f"__bizconnect_docx_tmp__ {local.stem}", "mimeType": DOC_MIME},
+                media_body=media, fields="id", supportsAllDrives=True).execute()
+            temp_id = export_id = f["id"]
+        content = drive.files().export(fileId=export_id, mimeType=DOCX_MIME).execute()
+    except SystemExit:
+        raise
+    except Exception as e:
+        _die_google(e, doc_id)
+    finally:
+        if temp_id:
+            try:
+                drive.files().delete(fileId=temp_id, supportsAllDrives=True).execute()
+            except Exception:
+                pass
+
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(content)
+    print(f"wrote {_rel(out_path, root)} ({len(content)} bytes) "
+          + ("from the bound Doc (in sync)" if reuse else "via a temporary Doc (deleted)"))
+
+
 VERBS = {
     "push": cmd_push, "pull": cmd_pull, "link": cmd_link, "unlink": cmd_unlink,
     "status": cmd_status, "list": cmd_list,
     "comments": cmd_comments, "annotate": cmd_annotate, "diff": cmd_diff, "resolve": cmd_resolve,
+    "docx": cmd_docx,
 }
 
 
