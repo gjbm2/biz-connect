@@ -25,12 +25,14 @@ Verbs
   comments <file> [--json] [--out P]                  dump the Doc's comments (feedback capture)
   diff <file>                                         unified diff: Doc body vs local (direct edits)
   resolve <file> <commentId> [--note T]               resolve a comment thread (close-out)
-  docx <file> [--out P]                               convert Markdown -> .docx (via Drive import/export)
+  docx <file> [--out P] [--save]                      Markdown -> .docx (Drive convert; if the target is
+                                                      open in Word, refreshes the LIVE doc via COM)
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -802,11 +804,62 @@ def cmd_annotate(argv):
           + (f", {failed} failed" if failed else ""))
 
 
+def _refresh_live_word_doc(target: Path, content: bytes, save: bool) -> bool:
+    """The target .docx is write-locked because it is OPEN in Word. Instead of
+    failing, refresh the OPEN document's content in place via COM (Windows only):
+    attach to the user's already-running Word, find the document, replace its body
+    with the freshly exported content. Never opens a new Word, never closes or
+    saves the user's document unless save=True — the user keeps Ctrl+Z / Ctrl+S.
+    Returns True if the live document was refreshed."""
+    if os.name != "nt":
+        return False
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError:
+        return False
+    import tempfile
+    pythoncom.CoInitialize()
+    try:
+        try:
+            word = win32com.client.GetActiveObject("Word.Application")
+        except Exception:
+            return False                      # no running Word — a different lock
+        tgt = str(target.resolve()).lower()
+        doc = None
+        for d in word.Documents:
+            try:
+                if str(d.FullName).lower() == tgt:
+                    doc = d
+                    break
+            except Exception:
+                continue
+        if doc is None:
+            return False
+        tmp = Path(tempfile.gettempdir()) / f"bizconnect_docx_{os.getpid()}.docx"
+        tmp.write_bytes(content)
+        try:
+            rng = doc.Content
+            rng.Delete()
+            rng.InsertFile(str(tmp))
+            if save:
+                doc.Save()
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        return True
+    finally:
+        pythoncom.CoUninitialize()
+
+
 def cmd_docx(argv):
     """Markdown -> .docx, using Drive as the converter (import md -> Doc, export
     Doc -> Word). If the file's bound Doc already holds exactly this content, export
     that; otherwise convert via a throwaway Doc that is deleted afterwards — no
-    binding is written and nothing lingers in Drive."""
+    binding is written and nothing lingers in Drive. If the target .docx is open in
+    Word, the OPEN document is refreshed in place via COM (--save to also save it)."""
     arg = _positional(argv, value_flags=("--out",))
     if not arg:
         sys.exit("docx needs <file.md>")
@@ -853,10 +906,20 @@ def cmd_docx(argv):
 
     if isinstance(content, str):
         content = content.encode("utf-8")
+    src = "from the bound Doc (in sync)" if reuse else "via a temporary Doc (deleted)"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(content)
-    print(f"wrote {_rel(out_path, root)} ({len(content)} bytes) "
-          + ("from the bound Doc (in sync)" if reuse else "via a temporary Doc (deleted)"))
+    try:
+        out_path.write_bytes(content)
+    except PermissionError:
+        # The .docx is open in Word. Refresh the live document instead of failing.
+        if _refresh_live_word_doc(out_path, content, save="--save" in argv):
+            saved = "and saved" if "--save" in argv else                 "left UNSAVED — Ctrl+S in Word to persist, Ctrl+Z to revert"
+            print(f"{_rel(out_path, root)} is open in Word — refreshed the LIVE document "
+                  f"in place ({len(content)} bytes {src}), {saved}.")
+            return
+        sys.exit(f"{_rel(out_path, root)} is locked (open in another app?) and no open "
+                 f"Word document matches it — close the file and re-run.")
+    print(f"wrote {_rel(out_path, root)} ({len(content)} bytes) {src}")
 
 
 VERBS = {
