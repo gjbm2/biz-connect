@@ -38,7 +38,7 @@ scripts\install.ps1     # Windows
 (For local development on a clone, install from a path: `/plugin marketplace add C:/path/to/biz-connect`.)
 
 After the next session start, these skills are available in **every** project:
-`gdoc-sync`, `notion-notes`, `sheet-io`, `workbook-diff`, `git-flow`, `doc-pipeline`,
+`gdoc-sync`, `notion-sync`, `notion-notes`, `sheet-io`, `workbook-diff`, `git-flow`, `doc-pipeline`,
 `feedback-ingest`, `register`, `biz-connect-setup`.
 
 > **Restart Claude Code (start a new session) before running steps 2–3.**
@@ -185,7 +185,7 @@ everyone's update nudge, so bump it on every meaningful change.
 | Service | Verbs | Notes |
 |---------|-------|-------|
 | `gdoc` | `push pull status link unlink list comments diff resolve` | local Markdown ↔ Google Doc; `comments`/`diff`/`resolve` capture review feedback |
-| `notion` | `whoami check read upload fill` | media upload + headless read; text via the Notion MCP |
+| `notion` | `link map outline status push pull` · `whoami check read upload fill sync` | two-way sync of project Markdown with Notion via a `notion.yaml` mapping (file ↔ page / section-under-a-heading / database of front-matter rows), guarded both ways; plus media upload, headless read and one-way hub mirror |
 | `sheet` | `whoami check read write append clear create` | service-account Sheets r/w |
 | `xlsx` | `diff OLD NEW [--json J] [--summary S] [-o MD] [--formulas] [--values]` · `verify NARRATIVE.md DIFF.json` | row+column-aligned diff of two `.xlsx` workbooks -> a deterministic JSON fact graph (headline metrics, roles, causal links) + capped Markdown; `verify` is the anti-hallucination gate. Local; no credentials. The `workbook-diff` skill turns this into a verified narrative |
 | `git` | `status save sync pr` | branch-off-protected, co-author trailer, rebase-sync, PR |
@@ -194,7 +194,7 @@ everyone's update nudge, so bump it on every meaningful change.
 | `docreg` | `init log list pull` | Notion catalogue of produced Doc instances/versions; `gdoc push --new --version` logs each major build |
 
 Plus `bizconnect doctor` / `init` / `update` / `version`. Skills (`/biz-connect:gdoc-sync`,
-`notion-notes`, `sheet-io`, `workbook-diff`, `git-flow`, `doc-pipeline`, `feedback-ingest`,
+`notion-sync`, `notion-notes`, `sheet-io`, `workbook-diff`, `git-flow`, `doc-pipeline`, `feedback-ingest`,
 `register`, `biz-connect-setup`) wrap these for Claude.
 
 ### Google Docs ownership

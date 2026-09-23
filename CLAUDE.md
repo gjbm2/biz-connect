@@ -16,7 +16,7 @@ In the Claude Code REPL:
 (For local development on a clone, use the path instead: `/plugin marketplace add .`)
 
 This makes the plugin's skills available in **every** project after the next session start:
-`gdoc-sync`, `notion-notes`, `sheet-io`, `workbook-diff`, `git-flow`, `doc-pipeline`,
+`gdoc-sync`, `notion-sync`, `notion-notes`, `sheet-io`, `workbook-diff`, `git-flow`, `doc-pipeline`,
 `feedback-ingest`, `register`, `biz-connect-setup`.
 
 The non-interactive equivalent (e.g. from a script):
@@ -55,7 +55,8 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" init      # writes connecti
 ```bash
 B='python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py"'
 $B gdoc    push|pull|status|link <file.md>   # local Markdown <-> Google Doc
-$B notion  check|read|upload|fill .          # . = this repo's notion.notes_page; text via the Notion MCP
+$B notion  status|push|pull <folder>        # two-way file <-> Notion sync via <folder>/notion.yaml
+$B notion  check|read|upload|fill .          # . = this repo's notion.notes_page
 $B sheet   read|write|append <sheet-url>     # service-account Sheets r/w
 $B git     save|sync|pr                      # safe, standardised git flow
 $B compose status|run|accept|graph           # doc-composition pipeline (needs pipeline.yaml); `run inputs` syncs sources

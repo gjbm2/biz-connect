@@ -1,11 +1,12 @@
-"""notion — read pages, upload local media, and manage notes on Notion.
+"""notion — sync local files with Notion, read pages, upload local media.
 
-Division of labour (mirrors the proven notion-tools pattern):
-  * Search / read / write TEXT      -> the Notion MCP (notion-fetch, notion-search,
-                                       notion-update-page). Richer; nothing to add here.
-  * Import a LOCAL file (image/PDF/  -> THIS tool. The MCP's image syntax is URL-only;
-    video/audio) onto a page           the File Upload API is the only way to attach a
-                                        local file.
+Division of labour:
+  * Keep project FILES and Notion    -> THIS tool: `link / map / status / push / pull`
+    in two-way sync                    (a notion.yaml maps each file to a page, a section
+                                        under a heading, or a database — see notiontree.py).
+  * Ad-hoc search / edits by hand    -> the Notion MCP (notion-fetch, notion-search, ...).
+  * Import a LOCAL file (image/PDF/  -> THIS tool (`upload` / `fill`): the File Upload API.
+    video/audio) onto a page
   * Headless read / access pre-flight -> THIS tool (no MCP/OAuth needed; uses the token).
 
 Stdlib only (urllib). Token + version come from the central store (secrets.env):
@@ -20,9 +21,10 @@ Verbs
   read   <page|url|.> [--depth N]     dump a page as Markdown
   upload <page|url|.> <file>... [--caption T] [--after BLOCK_ID]
   fill   <page|url|.> --dir DIR       swap [[img: NAME | CAPTION]] placeholders for uploads
-  sync   <page|url|.> --out DIR       mirror a hub page (sub-pages, databases, files,
-                                        links) into a local dir [--exclude id,id]
+  sync   <page|url|.> --out DIR       one-way MIRROR of a hub page (sub-pages, databases,
+                                        files, links) into a local dir [--exclude id,id]
                                         [--depth N] [--no-files] [--no-follow]
+  link | map | outline | status | push | pull    two-way mapped sync (below)
 """
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ import json
 import mimetypes
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -94,7 +97,13 @@ def _headers(json_body=True):
     return h
 
 
-def api(method, path, body=None, raw_url=None, headers=None, data_bytes=None):
+RETRY_STATUS = {409, 429, 500, 502, 503, 504}
+
+
+def api(method, path, body=None, raw_url=None, headers=None, data_bytes=None, retries=5):
+    """One Notion REST call -> (status, json). Rate limits (429, honouring Retry-After),
+    transient 5xx/409 conflicts and network errors are retried with backoff, so a long
+    tree sync rides out Notion's ~3 req/s limit instead of failing half-way."""
     url = raw_url or (API + path)
     if data_bytes is not None:
         data = data_bytes
@@ -102,19 +111,33 @@ def api(method, path, body=None, raw_url=None, headers=None, data_bytes=None):
         data = json.dumps(body).encode()
     else:
         data = None
-    req = urllib.request.Request(url, data=data, method=method)
-    for k, v in (headers or _headers()).items():
-        req.add_header(k, v)
-    try:
-        with urllib.request.urlopen(req) as resp:
-            raw = resp.read().decode("utf-8")
-            return resp.status, (json.loads(raw) if raw else {})
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode("utf-8")
+    delay = 1.0
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(url, data=data, method=method)
+        for k, v in (headers or _headers()).items():
+            req.add_header(k, v)
         try:
-            return e.code, json.loads(raw)
-        except Exception:
-            return e.code, {"message": raw}
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                raw = resp.read().decode("utf-8")
+                return resp.status, (json.loads(raw) if raw else {})
+        except urllib.error.HTTPError as e:
+            raw = e.read().decode("utf-8")
+            if e.code in RETRY_STATUS and attempt < retries:
+                wait = e.headers.get("Retry-After") if e.headers else None
+                time.sleep(float(wait) if wait and wait.replace(".", "", 1).isdigit() else delay)
+                delay = min(delay * 2, 30)
+                continue
+            try:
+                return e.code, json.loads(raw)
+            except Exception:
+                return e.code, {"message": raw}
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            if attempt < retries:
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            return 599, {"message": "network error: %s" % e}
+    return 599, {"message": "retries exhausted"}
 
 
 def _die(status, body, what):
@@ -165,12 +188,75 @@ def media_block(block_type, file_upload_id, caption=""):
 
 
 def attach(parent_id, children, after=None):
-    body = {"children": children}
-    if after:
-        body["after"] = after
-    status, body = api("PATCH", f"/blocks/{parent_id}/children", body=body)
-    _die(status, body, "attach block")
-    return [b["id"] for b in body.get("results", [])]
+    """Append `children` (at the end, or after block `after`); return the NEW blocks' ids."""
+    return append_children(parent_id, children, after=after)
+
+
+MAX_CHILDREN = 100          # blocks per append request
+MAX_NEST = 2                # levels of nesting below a top-level block per request
+
+
+def _trim(block, level=0):
+    """Copy `block` with nesting cut at MAX_NEST; return (copy, deferred) where deferred is
+    [(index-path, children)] to append once the trimmed blocks exist."""
+    t = block.get("type")
+    body = dict(block.get(t) or {})
+    kids = body.pop("children", None) or []
+    out = {"type": t, t: body}
+    deferred = []
+    if kids:
+        if level >= MAX_NEST:
+            deferred.append(((), kids))
+        else:
+            trimmed = []
+            for k, c in enumerate(kids):
+                cc, dd = _trim(c, level + 1)
+                trimmed.append(cc)
+                deferred.extend(((k,) + path, ch) for path, ch in dd)
+            body["children"] = trimmed
+    return out, deferred
+
+
+def append_children(parent_id, children, after=None, at_start=False):
+    """Insert blocks under `parent_id` — at the end (default), at the start, or after block
+    `after` — in batches of 100, appending any nesting deeper than the API's two levels in
+    follow-up calls. Returns the ids of the new top-level blocks, in order.
+
+    (The API answers with the new blocks FIRST, followed by every later sibling, so the
+    first len(batch) results are the ones we created.)"""
+    ids = []
+    for s in range(0, len(children), MAX_CHILDREN):
+        batch = children[s:s + MAX_CHILDREN]
+        trimmed, deferred = [], []
+        for k, b in enumerate(batch):
+            tb, dd = _trim(b)
+            trimmed.append(tb)
+            deferred.extend(((k,) + path, ch) for path, ch in dd)
+        body = {"children": trimmed}
+        if ids:
+            body["position"] = {"type": "after_block", "after_block": {"id": ids[-1]}}
+        elif at_start:
+            body["position"] = {"type": "start"}
+        elif after:
+            body["position"] = {"type": "after_block", "after_block": {"id": after}}
+        status, resp = api("PATCH", f"/blocks/{parent_id}/children", body=body)
+        _die(status, resp, "append blocks")
+        new = [b["id"] for b in resp.get("results", [])[:len(trimmed)]]
+        if len(new) != len(trimmed):
+            sys.exit("append blocks: Notion returned %d of %d new blocks" % (len(new), len(trimmed)))
+        ids.extend(new)
+        for path, kids in deferred:
+            target = new[path[0]]
+            for k in path[1:]:
+                target = get_children(target)[k]["id"]
+            append_children(target, kids)
+    return ids
+
+
+def delete_block(block_id):
+    status, resp = api("DELETE", f"/blocks/{block_id}")
+    if status >= 300 and status != 404:
+        _die(status, resp, "delete block")
 
 
 # --------------------------------------------------------------------- reading
@@ -669,15 +755,22 @@ def cmd_sync(argv):
 
 VERBS = {"whoami": cmd_whoami, "check": cmd_check, "read": cmd_read,
          "upload": cmd_upload, "fill": cmd_fill, "sync": cmd_sync}
+# mapped two-way sync of local files <-> Notion (notion.yaml): see notiontree.py
+TREE_VERBS = ("link", "map", "outline", "status", "push", "pull")
 
 
 def run(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__)
+        from . import notiontree
+        print(notiontree.__doc__)
         return 0
     verb, rest = argv[0], argv[1:]
+    if verb in TREE_VERBS:
+        from . import notiontree
+        return getattr(notiontree, "cmd_" + verb)(rest) or 0
     fn = VERBS.get(verb)
     if not fn:
-        sys.exit(f"unknown notion verb {verb!r}. One of: {', '.join(VERBS)}")
+        sys.exit(f"unknown notion verb {verb!r}. One of: {', '.join(list(VERBS) + list(TREE_VERBS))}")
     fn(rest)
     return 0

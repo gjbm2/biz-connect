@@ -29,7 +29,8 @@ USAGE = """biz-connect — business-service connectors for this repo.
   bizconnect version
 
   bizconnect gdoc   push|pull|status|link|unlink|list|comments|diff|resolve|docx   Markdown <-> Google Docs (+ feedback capture, .docx export)
-  bizconnect notion whoami|check|read|upload|fill        read pages, upload local media
+  bizconnect notion link|map|outline|status|push|pull    two-way sync of project files <-> Notion (notion.yaml)
+  bizconnect notion whoami|check|read|upload|fill|sync   read pages, upload local media, mirror a hub
   bizconnect sheet  whoami|check|read|write|append|clear|create
   bizconnect xlsx   diff OLD.xlsx NEW.xlsx [-o OUT.md] [--formulas] [--values]  structural workbook diff
   bizconnect git    status|save|sync|pr                  standardised git flow

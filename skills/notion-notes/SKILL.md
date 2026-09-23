@@ -6,6 +6,10 @@ allowed-tools: Bash(python *), Read
 
 # Notion notes & media
 
+> To keep project **files** in Notion (pages, sections under a heading, databases) and pull
+> people's edits back, use the **notion-sync** skill (`notion push/pull` with a `notion.yaml`
+> mapping) instead of hand-editing through the MCP.
+
 Division of labour:
 
 - **Text — search / read / create / edit pages:** done with the **Notion MCP** tools
