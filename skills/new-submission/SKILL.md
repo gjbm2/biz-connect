@@ -1,7 +1,7 @@
 ---
 name: new-submission
 description: Stand up a new automated-document deliverable in an umbrella repo — scaffold deliverables/<slug>/, designate a Notion hub page as the submission (mark it + provision its open-points register and docs-registry databases), and wire it into connections.yaml. Use when the user wants to start a new consultation response / report / submission, "add a deliverable", "set up a new automated document", or designate a Notion page as a submission. Pairs with doc-pipeline (to then build it) and register/docreg (the equipment it provisions).
-allowed-tools: Bash(python *), Read, Edit, Write
+allowed-tools: Bash(bizconnect *), Bash(python *), Bash(python3 *), Bash(py *), Read, Edit, Write
 ---
 
 # Start a new automated document (a deliverable / submission)
@@ -24,38 +24,41 @@ repo. Designating a page is opt-in: only the pages you run this on become submis
 
 ## The sequence
 
-Let `<slug>` be a short kebab id (e.g. `cma-energy-data-2027`) and `<hub>` the Notion page that
-will be this submission's home (an existing planning page, or one you create under the umbrella
-"Consultations and regulation" page first).
+Let `<slug>` be a short kebab id (e.g. `market-review-2027`) and `<hub>` the Notion page that
+will be this submission's home (an existing planning page, or one you create under the
+umbrella's parent Notion page first).
 
 ```bash
-BC='python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py"'
-
 # 1. Scaffold the repo folder + connections.yaml stub, and mark the hub page as a submission
 #    (📨 icon + callout + getting-started links). Run from the UMBRELLA repo root.
-$BC deliverable new <slug> --title "Human title" --hub <hub> [--drive-folder <subfolder-id>]
+bizconnect deliverable new <slug> --title "Human title" --hub <hub> [--drive-folder <subfolder-id>]
 
 # 2. Provision the equipment ON the hub page — run these from INSIDE the new folder so the
 #    bindings land under deliverables.<slug> in connections.yaml:
 cd deliverables/<slug>
-$BC register init --parent <hub>      # open-points register DB (inline child DB on the hub)
-$BC docreg   init --parent <hub>      # docs-registry DB (inline child DB on the hub)
+bizconnect register init --parent <hub>      # open-points register DB (inline child DB on the hub)
+bizconnect docreg   init --parent <hub>      # docs-registry DB (inline child DB on the hub)
 ```
 
+If `bizconnect` isn't found (the plugin was installed in this session, or you're in a
+clone), run the launcher with the same arguments:
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" <service> <verb> ...` (`python` or `py`
+on Windows).
+
 > **Notion access is a prerequisite for step 2.** `register init` / `docreg init` create databases
-> *on* `<hub>`, and the build later scrapes `<hub>` as a research input — both need the `nous-reg
-> pipeline` Notion connection to reach `<hub>`. If that connection is attached at the umbrella
-> *Consultations and regulation* page (the recommended setup — see `tooling/README.md` §1), every
-> hub beneath it is already covered and there's nothing to do. If it's scoped per-hub instead, open
-> `<hub>` → ••• → **Add connections** → `nous-reg pipeline` *before* running step 2, or init fails
-> with a Notion permission error. `deliverable new --hub <hub>` records `<hub>` as each database's
-> `parent` in the stub, so `register init` / `docreg init` target the right page even if you omit
-> `--parent`.
+> *on* `<hub>`, and the build later scrapes `<hub>` as a research input — both need the Notion
+> integration that owns `NOTION_TOKEN` (`bizconnect notion whoami` names it) to reach `<hub>`. If
+> that integration is connected at the umbrella's parent page (the recommended setup), every hub
+> beneath it is already covered and there's nothing to do. If it's connected per hub instead, open
+> `<hub>` → ••• → **Connections** → add the integration *before* running step 2, or init fails
+> with a Notion permission error (`bizconnect notion check <hub>` tests it).
+> `deliverable new --hub <hub>` records `<hub>` as each database's `parent` in the stub, so
+> `register init` / `docreg init` target the right page even if you omit `--parent`.
 
 `deliverable new` is idempotent-ish: it refuses to overwrite an existing `deliverables/<slug>/`.
 `register init` / `docreg init` skip creation if already bound. To designate an **existing** hub
 that already has its planning content, just pass it as `--hub`; to start from scratch, create the
-Notion page first (under the umbrella page) and pass its URL.
+Notion page first (under the umbrella's parent page) and pass its URL.
 
 ## Then author the content (these are inputs the build reads, never regenerates)
 
@@ -74,7 +77,7 @@ Inside `deliverables/<slug>/`:
 
 Then build it with the **doc-pipeline** skill (`compose status` from inside the folder). Shared
 umbrella assets (e.g. company background) are referenced with a `//` path
-(`intro: //nous-background.md`).
+(`intro: //company-background.md`).
 
 ## Notes
 

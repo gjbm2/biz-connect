@@ -60,7 +60,7 @@ paths:
   prompts_dir: response/02.prompts
   answers_dir: response/04.answers
   submission: response/05.submission/front-matter.md
-  intro: //nous-background.md       # umbrella-shared (`//` = repo root)
+  intro: //company-background.md    # umbrella-shared (`//` = repo root)
   front_matter_template: response/05.submission/front-matter-template.md
   build_dir: response/03.build
   final: final/response.md
@@ -69,14 +69,14 @@ paths:
   feedback_dir: response/03.build/feedback
   register_journal: response/06.register/journal
 
-markers: ["[VERIFY", "[DECISION", "[RECONCILE", "[Nous team to add", "[Nous "]
+markers: ["[VERIFY", "[DECISION", "[RECONCILE", "[TEAM TO ADD", "[TBC"]
 provenance: "(src:"
 soft_cap_words: 450
 """
 
 _README_TMPL = """# {title}
 
-Deliverable `{slug}` of the nous-reg umbrella workspace. Run builds from inside this folder
+Deliverable `{slug}` of this umbrella workspace. Run builds from inside this folder
 (`cd deliverables/{slug}`); see [`response/pipeline.md`](response/pipeline.md) for the operating
 manual and the umbrella [`README.md`](../../README.md) for the layering.
 
@@ -188,7 +188,7 @@ def _mark_hub(hub, slug, title, root):
                 {"type": "text", "text": {"content": "This page is an automated-document SUBMISSION "}},
                 {"type": "text", "text": {"content": "(%s). " % slug},
                  "annotations": {"bold": True}},
-                {"type": "text", "text": {"content": "Its register + docs-registry live below; the build lives in the nous-reg repo under deliverables/%s/. " % slug}},
+                {"type": "text", "text": {"content": "Its register + docs-registry live below; the build lives in the umbrella repo under deliverables/%s/. " % slug}},
                 {"type": "text", "text": {"content": "Getting started", "link": {"url": gs}}},
                 {"type": "text", "text": {"content": " · "}},
                 {"type": "text", "text": {"content": "How the pipeline works", "link": {"url": pp}}},

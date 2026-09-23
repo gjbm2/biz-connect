@@ -1,7 +1,7 @@
 ---
 name: git-flow
 description: Standardised, safe git flow for a project repo — commit (branching off a protected branch first), sync (rebase-pull then push), and open a PR. Use when the user asks to save/commit/sync/push work or open a pull request and you want consistent, safe handling across repos.
-allowed-tools: Bash(python *), Bash(git *), Bash(gh *)
+allowed-tools: Bash(bizconnect *), Bash(python *), Bash(python3 *), Bash(py *), Bash(git *), Bash(gh *)
 ---
 
 # Standardised git flow
@@ -13,11 +13,16 @@ House rules applied consistently across every repo:
 - sync = rebase-pull with autostash, then push.
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" git status
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" git save "short message" --co-author "Claude <noreply@anthropic.com>"
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" git sync
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" git pr --title "..." --body "..."
+bizconnect git status
+bizconnect git save "short message" --co-author "Claude <noreply@anthropic.com>"
+bizconnect git sync
+bizconnect git pr --title "..." --body "..."
 ```
+
+If `bizconnect` isn't found (the plugin was installed in this session, or you're in a
+clone), run the launcher with the same arguments:
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" <service> <verb> ...` (`python` or `py`
+on Windows).
 
 `save` stages everything, and if you're on a protected branch it creates `wip/<slug>`
 first so `main` is never committed to directly. Add `--push` to push immediately.

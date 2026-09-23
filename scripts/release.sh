@@ -7,6 +7,17 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 V="${1:?usage: scripts/release.sh <version>  e.g. 0.2.0}"
 PY="${PYTHON:-python3}"; command -v "$PY" >/dev/null 2>&1 || PY=python
 
+cd "$ROOT"
+if ! { git diff --quiet && git diff --cached --quiet && [ -z "$(git status --porcelain)" ]; }; then
+  echo "commit your changes first — release.sh commits only the version bump" >&2
+  exit 1
+fi
+case "$(git ls-files -s bin/bizconnect)" in
+  100755*) ;;
+  *) echo "bin/bizconnect must be committed executable: git update-index --chmod=+x bin/bizconnect" >&2
+     exit 1 ;;
+esac
+
 "$PY" - "$ROOT" "$V" <<'PYEOF'
 import json, sys, pathlib
 root, ver = sys.argv[1], sys.argv[2]

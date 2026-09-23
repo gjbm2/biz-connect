@@ -3,11 +3,12 @@
 # COMMITTED, and contains NO secrets — only IDs/URLs, which are not sensitive.
 # Credentials live in the per-user central store (~/.config/biz-connect).
 # Copy this to your repo root as `connections.yaml` (or run `bizconnect init`).
+# Every section is optional: fill in only the services this repo uses.
 
 google:
   # New Google Docs created by `gdoc push` are shared back to this address (Editor),
   # so they appear in your own Drive (the service account can't surface a UI).
-  share_with: you@example.com
+  share_with:            # your email, e.g. alex@your-company.com
 
   # Optional: create new Docs inside this Drive folder or shared drive
   # (paste the folder URL or its id). Leave blank to use share_with instead.
@@ -21,6 +22,12 @@ google:
     #   url: https://docs.google.com/document/d/1AbC.../edit
 
 notion:
+  # Two-way FILE sync with Notion (the notion-sync skill) is NOT configured here. Each synced
+  # folder has its own committed notion.yaml, created by `bizconnect notion link <folder> <hub-url>`.
+  # For the sync, this file only marks the repo root; it needs none of the keys below.
+  # Optional repo-wide house style for sync pushes (a folder's notion.yaml can override it):
+  # style: {max_para_words: 80}
+
   # Default page for `notion <verb> .` (the "." shorthand). Paste a page URL or id.
   notes_page:
   # Optional named databases, e.g. tasks: <db-id>
@@ -62,10 +69,10 @@ git:
 # syncs each into its extract_to Markdown copy and never writes back to the source.
 # This is also a register of provenance (who/when/review) for those inputs.
 inputs: {}
-  # ofgem-strategy:
+  # strategy-draft:
   #   type: gdoc
   #   url: https://docs.google.com/document/d/.../edit
-  #   extract_to: response/inputs/ofgem-strategy.md
+  #   extract_to: response/inputs/strategy-draft.md
   #   prepared_by: Jane Doe <jane@example.com>
   #   prepared_on: 2026-06-12
   #   review: candidate          # candidate | reviewed | signed-off

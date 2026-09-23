@@ -1,7 +1,7 @@
 ---
 name: gdoc-sync
 description: Sync a local Markdown file to or from a Google Doc. Use when the user wants to push/update a Google Doc from a repo file, pull a Doc back into the repo as Markdown, link a repo file to an existing Doc, or check whether a doc is in sync. Keep the local Markdown as the source of truth and treat the Google Doc as a rendered, shareable copy.
-allowed-tools: Bash(python *), Read, Edit, Write
+allowed-tools: Bash(bizconnect *), Bash(python *), Bash(python3 *), Bash(py *), Read, Edit, Write
 ---
 
 # Google Docs ↔ Markdown sync
@@ -17,16 +17,21 @@ first push.
 All verbs go through the launcher (it bootstraps its own venv — nothing to install):
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc push  response/draft.md   # create or update the Doc
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc pull  response/draft.md   # overwrite local from the Doc
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc status                    # drift: local vs last push
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc link  response/draft.md <doc-url>   # bind an existing Doc
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc list                      # all bindings in this repo
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc push final/response.md --new --version v2.0  # NEW Doc instance for a major build
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc comments final/response.md --out build/feedback/feedback.bundle.md  # capture review comments
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc diff final/response.md     # direct edits (Doc vs local)
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" gdoc docx  response/draft.md [--out P] [--save]  # Markdown -> .docx (Drive convert; refreshes a Word-open target LIVE via COM, unsaved unless --save)
+bizconnect gdoc push  response/draft.md   # create or update the Doc
+bizconnect gdoc pull  response/draft.md   # overwrite local from the Doc
+bizconnect gdoc status                    # drift: local vs last push
+bizconnect gdoc link  response/draft.md <doc-url>   # bind an existing Doc
+bizconnect gdoc list                      # all bindings in this repo
+bizconnect gdoc push final/response.md --new --version v2.0  # NEW Doc instance for a major build
+bizconnect gdoc comments final/response.md --out build/feedback/feedback.bundle.md  # capture review comments
+bizconnect gdoc diff final/response.md     # direct edits (Doc vs local)
+bizconnect gdoc docx  response/draft.md [--out P] [--save]  # Markdown -> .docx (Drive convert; refreshes a Word-open target LIVE via COM, unsaved unless --save)
 ```
+
+If `bizconnect` isn't found (the plugin was installed in this session, or you're in a
+clone), run the launcher with the same arguments:
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" <service> <verb> ...` (`python` or `py`
+on Windows).
 
 Run from inside the repo (the tool finds `connections.yaml` by walking up from the
 cwd). Paths are repo-relative.

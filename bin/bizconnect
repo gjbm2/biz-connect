@@ -1,0 +1,43 @@
+#!/bin/sh
+# biz-connect command shim:  bizconnect <service> <verb> [args]
+#
+# Claude Code puts a plugin's bin/ on PATH, so skills and docs can say `bizconnect ...`.
+# This runs scripts/bizconnect.py (the self-bootstrapping launcher) with the first
+# working Python 3.9+ it finds: $BIZCONNECT_PYTHON, then python3, python, py -3.
+# Each candidate is test-run, so a stub that is on PATH but is not a real Python
+# (e.g. the Windows Store "python3" alias) is skipped.
+
+# Resolve this script's real directory, following symlinks (e.g. ~/.local/bin/bizconnect).
+self=$0
+while [ -h "$self" ]; do
+  dir=$(cd -P -- "$(dirname -- "$self")" && pwd) || exit 1
+  link=$(readlink -- "$self") || break
+  case $link in
+    /*) self=$link ;;
+    *) self=$dir/$link ;;
+  esac
+done
+here=$(cd -P -- "$(dirname -- "$self")" && pwd) || exit 1
+script=$here/../scripts/bizconnect.py
+if [ ! -f "$script" ]; then
+  echo "bizconnect: cannot find $script (broken plugin install?)" >&2
+  exit 127
+fi
+
+check='import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'
+
+if [ -n "${BIZCONNECT_PYTHON:-}" ]; then
+  exec "$BIZCONNECT_PYTHON" "$script" "$@"
+fi
+for py in python3 python; do
+  if command -v "$py" >/dev/null 2>&1 && "$py" -c "$check" >/dev/null 2>&1; then
+    exec "$py" "$script" "$@"
+  fi
+done
+if command -v py >/dev/null 2>&1 && py -3 -c "$check" >/dev/null 2>&1; then
+  exec py -3 "$script" "$@"
+fi
+
+echo "bizconnect: no Python 3.9+ found (tried python3, python, py -3)." >&2
+echo "Install Python 3 (https://www.python.org/downloads/) and re-run, or set BIZCONNECT_PYTHON." >&2
+exit 127

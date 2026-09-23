@@ -32,9 +32,14 @@ def plugin_root() -> Path:
 
 def _plugin_json():
     try:
-        return json.loads((plugin_root() / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        return json.loads((plugin_root() / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8-sig"))
     except Exception:
         return {}
+
+
+def installed_version() -> str:
+    """The installed plugin version (plugin.json) — same source as bizconnect.__version__."""
+    return str(_plugin_json().get("version") or "0+unknown")
 
 
 def _repo_slug(pj):
@@ -148,6 +153,8 @@ def cmd_update(argv):
         print("\nAn update is available. Update with:")
         print("  /plugin update biz-connect       # in the Claude Code REPL (installed plugin)")
         print("  git -C <repo> pull               # if you cloned the repo directly")
+        print("Code changes apply on the next command; skills added or changed by an update")
+        print("load at session start, so start a new Claude Code session afterwards.")
     elif not c.get("last_error"):
         print("up to date.")
     return 0

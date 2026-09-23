@@ -5,14 +5,79 @@ also `child_page` blocks of their parent; `PATCH /blocks/{id}/children` honours 
 (start / after_block) and answers with the NEW blocks first, then every later sibling;
 uploaded files come back as `file` objects with a signed URL whose second-to-last path
 segment is stable; select options are created on first use.
+
+It is also STRICT about Notion's request limits, answering 400 validation_error (and
+applying nothing) as the live API does, so a test can't pass on a request Notion would
+refuse: any `children` or rich-text array over 100 elements, more than 1000 block elements
+in one request, nesting deeper than two levels below the request's top-level blocks, a
+text.content over 2000 characters, or a JSON body over 500KB. Rejections are kept in
+`self.rejected` as (method, path, message).
 """
 from __future__ import annotations
 
 import copy
 import itertools
+import json
 import uuid
 
 ANN = ("bold", "italic", "strikethrough", "underline", "code")
+
+MAX_ARRAY = 100               # any array of blocks or rich text
+MAX_BLOCKS = 1000             # block elements per request
+MAX_NEST = 2                  # levels of nesting below the top-level blocks of a request
+MAX_TEXT = 2000               # characters in one text.content
+MAX_PAYLOAD = 500_000         # JSON bytes per request
+RICH_KEYS = ("rich_text", "title", "caption", "description")
+
+
+class _Invalid(Exception):
+    pass
+
+
+def _check_limits(body):
+    """Raise _Invalid with a Notion-style message if `body` breaks a request limit."""
+    size = len(json.dumps(body))
+    if size > MAX_PAYLOAD:
+        raise _Invalid("Request body too large: %d bytes; the limit is %d." % (size, MAX_PAYLOAD))
+    blocks = [0]
+
+    def arr(v, path):
+        if len(v) > MAX_ARRAY:
+            raise _Invalid("body failed validation: %s.length should be ≤ `%d`, instead was `%d`."
+                           % (path, MAX_ARRAY, len(v)))
+
+    def walk(o, path, depth):          # depth: level of the blocks in a children list met here
+        if isinstance(o, dict):
+            for k, v in o.items():
+                p = "%s.%s" % (path, k)
+                if k == "children" and isinstance(v, list):
+                    if depth > MAX_NEST:
+                        raise _Invalid("body failed validation: %s should be not present, instead was "
+                                       "`[...]` (more than %d levels of nesting in one request)." % (p, MAX_NEST))
+                    arr(v, p)
+                    blocks[0] += len(v)
+                    for i, c in enumerate(v):
+                        walk(c, "%s[%d]" % (p, i), depth + 1)
+                    continue
+                if k in RICH_KEYS and isinstance(v, list):
+                    arr(v, p)
+                if k == "cells" and isinstance(v, list):
+                    for i, cell in enumerate(v):
+                        if isinstance(cell, list):
+                            arr(cell, "%s[%d]" % (p, i))
+                if k == "text" and isinstance(v, dict) and isinstance(v.get("content"), str) \
+                        and len(v["content"]) > MAX_TEXT:
+                    raise _Invalid("body failed validation: %s.content.length should be ≤ `%d`, instead was `%d`."
+                                   % (p, MAX_TEXT, len(v["content"])))
+                walk(v, p, depth)
+        elif isinstance(o, list):
+            for i, x in enumerate(o):
+                walk(x, "%s[%d]" % (path, i), depth)
+
+    walk(body, "body", 0)
+    if blocks[0] > MAX_BLOCKS:
+        raise _Invalid("body failed validation: the request contains %d block elements; the limit is %d."
+                       % (blocks[0], MAX_BLOCKS))
 
 
 def _retrieved_rich(rich):
@@ -41,6 +106,7 @@ class FakeNotion:
         self.files = {}           # file url -> bytes (for downloads)
         self._clock = itertools.count(1)
         self.calls = []
+        self.rejected = []        # (method, path, message) of requests refused for a limit
 
     # ---------------------------------------------------------------- helpers
     def _now(self):
@@ -124,6 +190,12 @@ class FakeNotion:
         self.calls.append((method, path))
         if raw_url:                                    # file upload "send"
             return 200, {"status": "uploaded"}
+        if body is not None and method in ("POST", "PATCH"):
+            try:
+                _check_limits(body)
+            except _Invalid as e:
+                self.rejected.append((method, path, str(e)))
+                return 400, {"object": "error", "status": 400, "code": "validation_error", "message": str(e)}
         p = path.split("?")[0].strip("/").split("/")
         if p[0] == "pages" and len(p) == 1 and method == "POST":
             return self._create_page(body)

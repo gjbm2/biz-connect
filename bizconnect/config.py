@@ -42,13 +42,17 @@ def load_secrets() -> dict:
     Dotenv-ish: tolerates `export FOO=bar`, strips one pair of surrounding quotes,
     and drops an inline ` # comment` on unquoted values. secrets.env is AUTHORITATIVE
     (it overrides any pre-existing env var) so that rotating a credential in the store
-    actually takes effect — a stale exported var must not silently win.
+    actually takes effect — a stale exported var must not silently win. A BLANK value
+    (e.g. the template's `NOTION_TOKEN=`) is the exception: it leaves an exported var alone.
+    Read as utf-8-sig, so a leading BOM can't hide the first key.
     """
     global _loaded
     data: dict[str, str] = {}
     env_path = home() / "secrets.env"
     if env_path.exists():
-        for line in env_path.read_text(encoding="utf-8").splitlines():
+        # utf-8-sig: Windows PowerShell 5.1 (Set-Content/Out-File -Encoding utf8) writes a BOM,
+        # which would otherwise become part of the first key and hide e.g. NOTION_TOKEN.
+        for line in env_path.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -63,6 +67,9 @@ def load_secrets() -> dict:
                 h = v.find(" #")                  # dotenv-style inline comment (unquoted only)
                 if h != -1:
                     v = v[:h].rstrip()
+            if not v and os.environ.get(k):
+                continue                          # a blank template line (`NOTION_TOKEN=`) must not
+                                                  # clobber a value exported in the environment
             data[k] = v
             os.environ[k] = v
     _loaded = True
@@ -113,8 +120,8 @@ def _yaml():
     try:
         from ruamel.yaml import YAML
     except ImportError:
-        sys.exit("ruamel.yaml missing — run via the launcher "
-                 "(scripts/bizconnect.py bootstraps the central-store venv).")
+        sys.exit("ruamel.yaml missing — run via the `bizconnect` command (or scripts/bizconnect.py), "
+                 "which bootstraps the central-store venv.")
     y = YAML()
     y.preserve_quotes = True
     y.width = 4096                       # don't wrap long URLs/ids
@@ -127,7 +134,7 @@ def load_connections(start=None):
     f = find_connections(start)
     if not f:
         return {}, None
-    with open(f, encoding="utf-8") as fh:
+    with open(f, encoding="utf-8-sig") as fh:          # tolerate a BOM (PowerShell 5.1 editors)
         data = _yaml().load(fh)
     return (data or {}), f
 
@@ -145,7 +152,7 @@ def require_connections(start=None):
 
 def save_connections(data, path):
     """Write connections.yaml back, preserving comments and key order."""
-    with open(path, "w", encoding="utf-8") as fh:
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:   # LF on every OS: no CRLF churn
         _yaml().dump(data, fh)
 
 

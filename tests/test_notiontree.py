@@ -85,9 +85,9 @@ def test_pull_then_status_clean(env):
     assert ins.startswith("# Behavioural insights\n\n# WhatsApp\n\n- 66% connect")
     res, _ = run(env, "status")
     assert res == {}
-    # ids pinned in the mapping file
+    # ids pinned in the mapping file: both section headings, and the page (marks it as synced)
     txt = (env["proj"] / "notion.yaml").read_text(encoding="utf-8")
-    assert txt.count("id: ") == 2
+    assert txt.count("id: ") == 3
 
 
 def test_push_replaces_only_its_section(env):
@@ -164,7 +164,7 @@ def test_first_push_onto_hand_written_section_is_guarded(env):
     manifest(env, MAP % env["sub"])
     (env["proj"] / "nous.md").write_text("# What does Nous have?\n\n- Something else\n", encoding="utf-8")
     res, _ = run(env, "push", scope="nous.md")
-    assert res == {"nous.md": "conflict"}
+    assert res == {"nous.md": "no-baseline"}          # never synced here, and Notion differs
     assert env["fake"].texts(env["hub"])[3] == ("bulleted_list_item", "Tent poles")
 
 
@@ -439,7 +439,7 @@ def test_save_merges_a_concurrent_manifest_edit(env):
     t.save()
     txt = m.read_text(encoding="utf-8")
     assert "path: who.md" in txt                      # theirs kept
-    assert txt.count("id: ") == 2                     # ours (josh.md, nous.md heading ids) written
+    assert txt.count("id: ") == 3   # 2 heading ids + the synced page
     res, _ = run(env, "status")
     assert res == {"who.md": "new-remote"}
 

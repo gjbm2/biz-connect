@@ -241,20 +241,21 @@ def _inline(s, ann, link, out):
                 out.append(seg(m.group(1), m.group(1), **ann))
                 i += m.end()
                 continue
-        for delim, key in (("**", "bold"), ("__", "bold"), ("~~", "strikethrough"),
-                           ("*", "italic"), ("_", "italic")):
+        for delim, key in (("***", "bold+italic"), ("___", "bold+italic"), ("**", "bold"), ("__", "bold"),
+                           ("~~", "strikethrough"), ("*", "italic"), ("_", "italic")):
             if not s.startswith(delim, i):
                 continue
             d = len(delim)
             if i + d >= n or s[i + d].isspace():
                 continue
-            if delim in ("_", "__") and i > 0 and s[i - 1].isalnum():
+            if delim in ("_", "__", "___") and i > 0 and s[i - 1].isalnum():
                 continue                     # intraword underscore: literal
             j = _find_closer(s, i + d, delim)
             if j < 0:
                 continue
             _flush(buf, ann, link, out)
-            _inline(s[i + d:j], {**ann, key: True}, link, out)
+            more = {"bold": True, "italic": True} if key == "bold+italic" else {key: True}
+            _inline(s[i + d:j], {**ann, **more}, link, out)
             i = j + d
             break
         else:
@@ -263,10 +264,28 @@ def _inline(s, ann, link, out):
     _flush(buf, ann, link, out)
 
 
-def _merge(rich):
-    out = []
+def _edge_ws(rich):
+    """Styling on edge whitespace can't survive Markdown (`**a **` isn't bold), so a styled
+    segment's leading/trailing spaces are made plain. Code keeps its spaces (they're content)."""
     for r in rich:
         c, l, a = _seg_parts(r)
+        if not c or a[3] or not any(a[:3]) or c.strip() == c:
+            yield c, l, a
+            continue
+        core = c.strip()
+        lead, trail = c[:len(c) - len(c.lstrip())], c[len(c.rstrip()):]
+        plain_a = (False, False, False, False)
+        if lead:
+            yield lead, l, plain_a
+        if core:
+            yield core, l, a
+        if trail:
+            yield trail, l, plain_a
+
+
+def _merge(rich):
+    out = []
+    for c, l, a in _edge_ws(rich):
         if not c:
             continue
         if out:
@@ -314,7 +333,8 @@ def _wrap(text, marker):
 def _code_span(content):
     run = max((len(m) for m in re.findall(r"`+", content)), default=0) + 1
     ticks = "`" * run
-    pad = " " if (content.startswith("`") or content.endswith("`") or run > 1) else ""
+    edge_sp = content[:1] == " " and content[-1:] == " " and content.strip(" ")     # a re-parse eats one each side
+    pad = " " if (content.startswith("`") or content.endswith("`") or run > 1 or edge_sp) else ""
     return ticks + pad + content + pad + ticks
 
 
@@ -336,12 +356,28 @@ def render_inline(rich, href=None):
         run = [(c, {k for k, v in a.items() if v}) for c, _l, a in segs[i:j]]
         before = segs[i - 1][0][-1:] if i else ""
         after = segs[j][0][:1] if j < len(segs) else ""
-        body = _render_run(run, before, after, star=True)       # `*italic*`, as people write it ...
-        if [(c, a) for c, _l, a in (_seg_parts(r) for r in parse_inline(body))] != \
-                [(c, tuple(k in s for k in ANN_KEYS)) for c, s in _merged_run(run)]:
-            body = _render_run(run, before, after)              # ... unless that would be ambiguous
+        want = [(c, tuple(k in s for k in ANN_KEYS)) for c, s in _merged_run(run)]
+        # `*italic*`, as people write it, unless that would be ambiguous; then `_italic_`; then
+        # each segment wrapped on its own (`_Q3_**2026**`, where `*Q3***2026**` misparses)
+        for body in (f(run, before, after, star) for f, star in (
+                (_render_run, True), (_render_run, False), (_render_each, False), (_render_each, True))):
+            if [(c, a) for c, _l, a in (_seg_parts(r) for r in parse_inline(body))] == want:
+                break
+        else:
+            body = _render_run(run, before, after)              # nothing re-parses exactly
         out.append("[%s](%s)" % (body, link.replace(" ", "%20").replace(")", "%29")) if link else body)
         i = j
+    return "".join(out)
+
+
+def _render_each(run, before="", after="", star=False):
+    """Render each segment with its own markers (no shared runs). Next to a styled neighbour
+    the adjacent character is a marker, not text, so it doesn't count as inside a word."""
+    out = []
+    for k, (c, a) in enumerate(run):
+        prev = "" if k and run[k - 1][1] else run[k - 1][0][-1:] if k else before
+        nxt = "" if k + 1 < len(run) and run[k + 1][1] else run[k + 1][0][:1] if k + 1 < len(run) else after
+        out.append(_render_run([(c, a)], prev, nxt, star))
     return "".join(out)
 
 
@@ -553,7 +589,7 @@ def _cells(line):
     cells, cur, i = [], [], 0
     while i < len(s):
         if s[i] == "\\" and i + 1 < len(s) and s[i + 1] == "|":
-            cur.append("\\|")
+            cur.append("|")                  # GFM: `\|` is a literal pipe, even inside code spans
             i += 2
             continue
         if s[i] == "|":
@@ -779,6 +815,8 @@ _FM = re.compile(r"^---[ \t]*\n(.*?\n)?---[ \t]*(\n|$)", re.S)
 def split_front_matter(text):
     """(front_matter_text or None, rest). Only a block at the very top counts."""
     text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if text.startswith("\ufeff"):                # a UTF-8 BOM (PowerShell 5.1 writes one)
+        text = text[1:]
     m = _FM.match(text)
     if not m:
         return None, text

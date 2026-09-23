@@ -1,7 +1,7 @@
 ---
 name: doc-pipeline
 description: Build a structured document (e.g. a consultation response, a multi-section report) from a corpus — either end-to-end in one pass ("create/build/assemble the whole document/submission") or by commissioning any single stage or item (incremental/partial rebuilds). Use when a repo has a pipeline.yaml and the user wants to create the whole doc, or draft, review, rebuild per-item answers, ladder them into front matter, lint, render, or publish. Deterministic steps run as code; the per-item writing steps fan out to parallel high-reasoning subagents (or run inline), and the rendered document is pushed to a Google Doc for review. Keep the human-owned files (context/, answers/, submission/) as the source of truth.
-allowed-tools: Agent, Bash(python *), Read, Edit, Write
+allowed-tools: Agent, Bash(bizconnect *), Bash(python *), Bash(python3 *), Bash(py *), Read, Edit, Write
 ---
 
 # Document-composition pipeline (`compose`)
@@ -46,8 +46,9 @@ prompt already injects the global guide, the per-item guide, and the full eviden
 
 ## How to run
 
-All verbs go through the launcher (it bootstraps its own venv — nothing to install). Run
-from inside the consuming repo (it finds `pipeline.yaml` by walking up from the cwd):
+All verbs are `bizconnect compose ...` (the launcher behind it bootstraps its own venv —
+nothing to install). Run from inside the consuming repo (it finds `pipeline.yaml` by walking
+up from the cwd):
 
 > **Umbrella repos with multiple deliverables.** A repo may host many deliverables (e.g. one
 > consultation response each) under `deliverables/<slug>/`, each with its own `pipeline.yaml`
@@ -56,7 +57,7 @@ from inside the consuming repo (it finds `pipeline.yaml` by walking up from the 
 > `connections.yaml` lookups (`notion.register_db`, `notion.docs_registry`, `inputs`,
 > `google.drive_folder`) to its `deliverables.<slug>` block, falling back to the top level.
 > Umbrella-shared files are referenced from `pipeline.yaml` with a `//` prefix (e.g.
-> `intro: //nous-background.md`), resolved from the repo root. Single-deliverable repos need
+> `intro: //company-background.md`), resolved from the repo root. Single-deliverable repos need
 > none of this and behave exactly as before.
 
 **Pick the deliverable sensibly (don't make the user spell it out).** When asked to build/draft
@@ -69,14 +70,18 @@ the whole deliverable (`run draft all` → ladder → render) unless the user na
 shows what's actually stale, so "build/refresh the doc" rebuilds exactly what changed.
 
 ```bash
-BC='python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose'
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose status        # FRESH/STALE/MISSING per target
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose graph         # the dependency model
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose run  inputs    # refresh external source docs (read-only)
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose scaffold      # create missing per-item local guides
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose run  <stage> <id|all>
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" compose accept <stage> <id|all>
+bizconnect compose status                # FRESH/STALE/MISSING per target
+bizconnect compose graph                 # the dependency model
+bizconnect compose run inputs            # refresh external source docs (read-only)
+bizconnect compose scaffold              # create missing per-item local guides
+bizconnect compose run <stage> <id|all>
+bizconnect compose accept <stage> <id|all>
 ```
+
+If `bizconnect` isn't found (the plugin was installed in this session, or you're in a
+clone), run the launcher with the same arguments:
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" <service> <verb> ...` (`python` or `py`
+on Windows).
 
 Stages: `inputs` `assemble` (code) · `spec` `draft` `critique` `ladder` `assimilate` `digest` (llm) · `lint` `render` (code).
 
@@ -138,12 +143,12 @@ A full build runs the per-item LLM work as **parallel high-reasoning subagents**
 deterministic steps stay code). The per-item build stage is **`draft`** (optionally
 `critique`); it **reads** the existing guides — it does not regenerate them.
 
-1. `… compose run draft all` — writes every item's prompt into `build/<id>.draft.prompt.md`.
+1. `bizconnect compose run draft all` — writes every item's prompt into `build/<id>.draft.prompt.md`.
 2. **Fan out:** launch one subagent per item *in parallel* with the **Agent** tool, each on a
    high-reasoning model (`model: opus`). Tell each to read its `build/<id>.draft.prompt.md`,
    do the writing, and save **only** to `build/<id>.draft.gen.md` — never a human-owned file.
 3. **Promote forward + record:** promote each `…gen.md` into its **output** file
-   (`draft`→`answers/<id>.md`, which the build creates), then `… compose accept draft all`.
+   (`draft`→`answers/<id>.md`, which the build creates), then `bizconnect compose accept draft all`.
    Run `critique all` the same way for an adversarial pass (its gens stay in `build/` scratch);
    revise answers as needed.
 
@@ -151,10 +156,11 @@ deterministic steps stay code). The per-item build stage is **`draft`** (optiona
 inputs (see "`spec` is optional input-authoring"). Run `spec` only deliberately, for an empty
 guide, with a human promoting it.
 
-Then the single-shot steps (no fan-out): `… compose run ladder` → promote the front matter
-into `submission/` (an output); `… compose run lint`; `… compose run render`.
+Then the single-shot steps (no fan-out): `bizconnect compose run ladder` → promote the front
+matter into `submission/` (an output); then `bizconnect compose run lint` and
+`bizconnect compose run render`.
 
-**Deliver for review:** `… gdoc push <final>` pushes the rendered document to a Google Doc
+**Deliver for review:** `bizconnect gdoc push <final>` pushes the rendered document to a Google Doc
 (created and bound in `connections.yaml` on first run). That Doc is what reviewers mark up —
 the input to the **feedback roundtrip** (`feedback-ingest` skill). So one build goes: fan-out
 drafts → ladder → render → **GDoc for review** → roundtrips.

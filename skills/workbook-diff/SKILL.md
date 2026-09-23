@@ -1,7 +1,7 @@
 ---
 name: workbook-diff
 description: Structural, grounded diff of two Excel .xlsx workbooks, turned into a human-readable account of WHAT changed. Use when the user wants to compare two spreadsheets/workbooks, see what changed between two versions of an Excel model, diff two .xlsx files, or review someone's edits to a financial model. Runs a deterministic code-based diff (the ground truth) then writes a verified narrative that explains the actual edits — structural changes, assumption/value changes, formula-logic changes — with downstream effect as a brief footnote.
-allowed-tools: Bash(python *), Read, Write
+allowed-tools: Bash(bizconnect *), Bash(python *), Bash(python3 *), Bash(py *), Read, Write
 ---
 
 # Workbook diff -> grounded "what changed" narrative
@@ -22,15 +22,17 @@ figure is rejected.
 ## Stage 1 — run the deterministic diff
 
 ```bash
-B='python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py"'
-$B xlsx diff OLD.xlsx NEW.xlsx --json diff.json --summary diff.summary.json -o diff.md
+bizconnect xlsx diff OLD.xlsx NEW.xlsx --json diff.json --summary diff.summary.json -o diff.md
 ```
 
 - `diff.summary.json` (small) is what **you read** to author — header, diagnostics, totals,
   routing, named ranges, **headline_metrics**, **causal_links**, and the cause/structural
   facts. The value-ripple is summarised, not listed.
 - `diff.json` (full) is the verifier's ground truth. `diff.md` is a human preview.
-- (If `python` opens the Microsoft Store on Windows, use `py`. Quote paths with spaces.)
+- Quote paths with spaces. If `bizconnect` isn't found (plugin installed in this session, or
+  working in a clone), run the launcher with the same arguments:
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" xlsx diff ...` (`python` or `py` on
+  Windows).
 
 ## Stage 2 — gate, then author
 
@@ -91,7 +93,7 @@ diff_run_id: <copy diff_run_id from diff.json verbatim>
 ## Stage 3 — verify, repair, deliver
 
 ```bash
-$B xlsx verify narrative.md diff.json     # exit 0 = PASS, 1 = FAIL
+bizconnect xlsx verify narrative.md diff.json     # exit 0 = PASS, 1 = FAIL
 ```
 
 - **PASS** → present the narrative as the primary answer; link `diff.md` (preview) and

@@ -13,6 +13,7 @@
 # with `bizconnect compose run inputs`.
 
 title: "# My document"            # heading used by `render`
+question_label: Question          # `render` puts "> **Question.** <item text>" under each answer's heading ("" = none)
 
 items:                            # the per-item dimension (e.g. questions, sections, chapters)
   source: index/items.json        # a JSON file...

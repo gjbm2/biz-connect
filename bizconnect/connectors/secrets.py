@@ -17,9 +17,9 @@ Config (connections.yaml; IDs only, no secrets):
     provider: gcp
     project: my-gcp-project-id          # or set $GOOGLE_CLOUD_PROJECT
     pull:
-      - name: nous-reg-notion-token     # the Secret Manager secret id
+      - name: myrepo-notion-token        # the Secret Manager secret id
         env: NOTION_TOKEN               # -> upsert `KEY=value` in secrets.env
-      - name: nous-reg-google-sa-key
+      - name: myrepo-google-sa-key
         file: service-account.json      # -> write into the central store
         # version: latest               # optional (default: latest)
 

@@ -1,18 +1,23 @@
 """notion — sync local files with Notion, read pages, upload local media.
 
 Division of labour:
-  * Keep project FILES and Notion    -> THIS tool: `link / map / status / push / pull`
-    in two-way sync                    (a notion.yaml maps each file to a page, a section
-                                        under a heading, or a database — see notiontree.py).
+  * Keep project FILES and Notion    -> THIS tool: `link / map / outline / locate / diff /
+    in two-way sync                    status / push / pull` (a notion.yaml maps each file to
+                                        a page, a section under a heading, a folder of pages
+                                        or a database — see notiontree.py).
   * Ad-hoc search / edits by hand    -> the Notion MCP (notion-fetch, notion-search, ...).
   * Import a LOCAL file (image/PDF/  -> THIS tool (`upload` / `fill`): the File Upload API.
     video/audio) onto a page
   * Headless read / access pre-flight -> THIS tool (no MCP/OAuth needed; uses the token).
 
 Stdlib only (urllib). Token + version come from the central store (secrets.env):
-NOTION_TOKEN (required), NOTION_VERSION (optional, default 2022-06-28). A repo's
+NOTION_TOKEN (required), NOTION_VERSION (optional, default 2022-06-28 — leave it unset:
+the two-way sync pins 2022-06-28 whatever it says, via PINNED_VERSION). A repo's
 default notes page can be set in connections.yaml under `notion.notes_page`, so
 verbs accept "." to mean "this repo's notes page".
+
+Errors raise NotionError, a SystemExit: a CLI run exits with the message as before,
+while library callers (the tree sync) can catch it per item and carry on.
 
 Verbs
 -----
@@ -24,24 +29,38 @@ Verbs
   sync   <page|url|.> --out DIR       one-way MIRROR of a hub page (sub-pages, databases,
                                         files, links) into a local dir [--exclude id,id]
                                         [--depth N] [--no-files] [--no-follow]
-  link | map | outline | locate | status | push | pull    two-way mapped sync (below)
+  link | map | outline | locate | diff | status | push | pull    two-way mapped sync (below)
 """
 from __future__ import annotations
 
+import email.utils
 import glob as _glob
+import http.client
 import json
 import mimetypes
 import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from .. import config
 
 API = "https://api.notion.com/v1"
+# When set, overrides NOTION_VERSION for every call (the tree sync pins "2022-06-28": its
+# database/rows code needs that API version's /databases/{id}/query and properties shape).
+PINNED_VERSION = None
+
+
+class NotionError(SystemExit):
+    """A Notion call (or id parse) failed. A SystemExit, so an uncaught one ends a CLI run with
+    exactly the message `_die` always printed; library callers can catch it and carry on."""
+
+
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".heic", ".tif", ".tiff", ".bmp"}
 VIDEO_EXT = {".mp4", ".mov", ".webm", ".m4v"}
 AUDIO_EXT = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac"}
@@ -65,28 +84,40 @@ def _token():
 
 
 def _version():
-    return config.secret("NOTION_VERSION", default="2022-06-28")
+    return PINNED_VERSION or config.secret("NOTION_VERSION", default="2022-06-28")
 
 
 # ------------------------------------------------------------------------- ids
+def _dashed(h):
+    h = h.lower()
+    return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+
+
 def norm_id(s: str) -> str:
     """Accept a raw id, dashed id, or any Notion URL; return a dashed UUID.
 
-    The id is the LAST 32 hex chars of the final path segment (Notion appends it to
-    the title slug), so we strip query/fragment, take the last segment, keep hex
-    only, and use the trailing 32 — never the first hex run (slugs contain stray hex).
+    A side-peek URL (`.../Hub-<hub id>?p=<page id>&pm=s`, what the address bar shows while a
+    sub-page is open in peek mode) means the PEEKED page, so a `p=` query id wins. Otherwise
+    the id is the LAST 32 hex chars of the final path segment (Notion appends it to the
+    title slug): strip query/fragment, take the last segment, keep hex only, and use the
+    trailing 32 — never the first hex run (slugs contain stray hex).
     """
     if s == ".":
         page = config.get_path(config.load_connections()[0], "notion.notes_page")
         if not page:
-            sys.exit("'.' means this repo's notion.notes_page, but it isn't set in connections.yaml.")
-        s = page
+            raise NotionError("'.' means this repo's notion.notes_page, but it isn't set in connections.yaml.")
+        s = str(page)
+    s = str(s)
+    query = s.strip().split("#")[0].partition("?")[2]
+    for p in urllib.parse.parse_qs(query).get("p", []):
+        h = p.replace("-", "")
+        if re.fullmatch(r"[0-9a-fA-F]{32}", h):
+            return _dashed(h)
     seg = s.strip().split("?")[0].split("#")[0].rstrip("/").split("/")[-1]
     hexonly = re.sub(r"[^0-9a-fA-F]", "", seg)
     if len(hexonly) < 32:
-        sys.exit(f"could not find a Notion id in: {s!r}")
-    h = hexonly[-32:].lower()
-    return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+        raise NotionError(f"could not find a Notion id in: {s!r}")
+    return _dashed(hexonly[-32:])
 
 
 # ------------------------------------------------------------------------- http
@@ -97,13 +128,59 @@ def _headers(json_body=True):
     return h
 
 
-RETRY_STATUS = {409, 429, 500, 502, 503, 504}
+# Retry policy. 409 (conflict), 429 (rate limited) and 529 (overloaded) mean Notion did NOT
+# apply the request, so any method may be resent. Other 5xx and network errors/timeouts are
+# ambiguous — the write may already have landed — so only idempotent calls are resent: GET,
+# DELETE, read-only POST queries, and a PATCH that SETS values (/pages/{id}, /blocks/{id},
+# /databases/{id}: sending it twice leaves the same state). A create (POST), an append
+# (PATCH …/children) or a file-upload send gets the error back and its caller stops. (A
+# re-run diffs against what is really there, which is safe; a blind resend of an append or a
+# create duplicates content.)
+RETRY_ALWAYS = {409, 429, 529}
+RETRY_STATUS = RETRY_ALWAYS | {500, 502, 503, 504}      # kept for callers; idempotent set
+IDEMPOTENT_METHODS = {"GET", "HEAD", "OPTIONS", "DELETE"}
+_READ_ONLY_POST = re.compile(r"^/(?:search|(?:databases|data_sources)/[^/?]+/query)(?:[/?]|$)")
+NETWORK_ERRORS = (OSError, http.client.HTTPException)   # URLError, timeouts (socket.timeout
+MAX_WAIT = 300.0                                         # on 3.9), resets are all OSErrors
+
+
+def _idempotent(method, path, raw_url=None):
+    m = (method or "").upper()
+    if m in IDEMPOTENT_METHODS:
+        return True
+    if raw_url:
+        return False
+    if m == "PATCH":
+        return not (path or "").split("?")[0].rstrip("/").endswith("/children")
+    return m == "POST" and bool(_READ_ONLY_POST.match(path or ""))
+
+
+def _retry_after(headers, default):
+    """Seconds to wait: the Retry-After header (seconds or an HTTP date) if any, else `default`."""
+    v = headers.get("Retry-After") if headers is not None else None
+    if not v:
+        return default
+    v = str(v).strip()
+    try:
+        secs = float(v)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(v)
+            secs = (when - datetime.now(when.tzinfo)).total_seconds()
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return default
+    return min(max(secs, 0.0), MAX_WAIT) if secs == secs else default     # NaN -> default
 
 
 def api(method, path, body=None, raw_url=None, headers=None, data_bytes=None, retries=5):
-    """One Notion REST call -> (status, json). Rate limits (429, honouring Retry-After),
-    transient 5xx/409 conflicts and network errors are retried with backoff, so a long
-    tree sync rides out Notion's ~3 req/s limit instead of failing half-way."""
+    """One Notion REST call -> (status, json).
+
+    Rate limits and overload (429/529, honouring Retry-After) and 409 conflicts are retried
+    with backoff for every method, so a long tree sync rides out Notion's ~3 req/s limit
+    instead of failing half-way. Other 5xx and network errors are retried only for
+    idempotent calls (see _idempotent); for a create or an append they come straight back
+    (network errors as 599), since Notion may already have applied the write and resending it
+    would duplicate content."""
     url = raw_url or (API + path)
     if data_bytes is not None:
         data = data_bytes
@@ -111,6 +188,7 @@ def api(method, path, body=None, raw_url=None, headers=None, data_bytes=None, re
         data = json.dumps(body).encode()
     else:
         data = None
+    idem = _idempotent(method, path, raw_url)
     delay = 1.0
     for attempt in range(retries + 1):
         req = urllib.request.Request(url, data=data, method=method)
@@ -121,28 +199,36 @@ def api(method, path, body=None, raw_url=None, headers=None, data_bytes=None, re
                 raw = resp.read().decode("utf-8")
                 return resp.status, (json.loads(raw) if raw else {})
         except urllib.error.HTTPError as e:
-            raw = e.read().decode("utf-8")
-            if e.code in RETRY_STATUS and attempt < retries:
-                wait = e.headers.get("Retry-After") if e.headers else None
-                time.sleep(float(wait) if wait and wait.replace(".", "", 1).isdigit() else delay)
+            try:
+                raw = e.read().decode("utf-8", "replace")
+            except NETWORK_ERRORS:
+                raw = ""
+            retry = e.code in RETRY_ALWAYS or (idem and e.code >= 500)
+            if retry and attempt < retries:
+                time.sleep(_retry_after(e.headers, delay))
                 delay = min(delay * 2, 30)
                 continue
             try:
                 return e.code, json.loads(raw)
             except Exception:
                 return e.code, {"message": raw}
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+        except NETWORK_ERRORS as e:
+            if not idem:
+                return 599, {"message": "network error: %s — %s %s was not resent, since Notion may "
+                                        "already have applied it; re-run to compare and continue"
+                                        % (str(e) or type(e).__name__, method, path or url)}
             if attempt < retries:
                 time.sleep(delay)
                 delay = min(delay * 2, 30)
                 continue
-            return 599, {"message": "network error: %s" % e}
+            return 599, {"message": "network error: %s" % (str(e) or type(e).__name__)}
     return 599, {"message": "retries exhausted"}
 
 
 def _die(status, body, what):
     if status >= 300:
-        sys.exit(f"{what} failed [{status}]: {body.get('message') or body}")
+        msg = body.get("message") if isinstance(body, dict) else None
+        raise NotionError(f"{what} failed [{status}]: {msg or body}")
 
 
 # --------------------------------------------------------------------- uploads
@@ -157,7 +243,7 @@ def infer_type(path: Path):
 def upload_file(path: Path) -> str:
     size = path.stat().st_size
     if size > 20 * 1024 * 1024:
-        sys.exit(f"{path.name} is {size/1e6:.1f}MB > 20MB single-part limit (multi-part not implemented)")
+        raise NotionError(f"{path.name} is {size/1e6:.1f}MB > 20MB single-part limit (multi-part not implemented)")
     _, ctype = infer_type(path)
     status, body = api("POST", "/file_uploads", body={"filename": path.name, "content_type": ctype})
     _die(status, body, f"create upload for {path.name}")
@@ -173,7 +259,7 @@ def upload_file(path: Path) -> str:
     status, body = api("POST", "", raw_url=upload_url, headers=hdrs, data_bytes=multipart)
     _die(status, body, f"send bytes for {path.name}")
     if body.get("status") != "uploaded":
-        sys.exit(f"{path.name}: unexpected status {body.get('status')}")
+        raise NotionError(f"{path.name}: unexpected status {body.get('status')}")
     return fid
 
 
@@ -192,46 +278,110 @@ def attach(parent_id, children, after=None):
     return append_children(parent_id, children, after=after)
 
 
-MAX_CHILDREN = 100          # blocks per append request
+# Request limits of the append-children endpoint (Notion "Request limits"): any array of
+# blocks (or rich text) holds at most 100 elements, one request carries at most 1000 block
+# elements in all, a request nests at most two levels below its top-level blocks, and the
+# payload is capped at ~500KB (we stay under MAX_BYTES to leave headroom).
+MAX_CHILDREN = 100          # elements in any one `children` array (so: blocks per append)
 MAX_NEST = 2                # levels of nesting below a top-level block per request
+MAX_BLOCKS = 1000           # block elements per request, counted recursively
+MAX_BYTES = 450_000         # JSON bytes per request
+_ENVELOPE = 512             # {"children": [...], "position": {...}} around the blocks
+_KIDS_KEY = len(', "children": []')   # json.dumps' default separators
+# Blocks that must be CREATED with children, and how many levels below themselves those
+# span: a table needs its rows, a column list its columns, a column its content. Such a
+# block is never sent where its required children would be cut by MAX_NEST.
+_NEEDS_KIDS = {"table": 1, "column": 1, "column_list": 2}
 
 
-def _trim(block, level=0):
-    """Copy `block` with nesting cut at MAX_NEST; return (copy, deferred) where deferred is
-    [(index-path, children)] to append once the trimmed blocks exist."""
+def _jsize(obj):
+    return len(json.dumps(obj))       # the same encoding api() sends
+
+
+def _kids_of(block):
+    t = block.get("type")
+    body = block.get(t)
+    return (body.get("children") or []) if isinstance(body, dict) else []
+
+
+def _trim(block, level=0, budget=(MAX_BLOCKS, MAX_BYTES)):
+    """Copy `block` into something one append request can carry.
+
+    Returns (copy, deferred, n_blocks, n_bytes). In the copy every `children` list holds at
+    most MAX_CHILDREN blocks, nesting stops at MAX_NEST levels, and the whole copy fits
+    `budget` = (blocks, JSON bytes): a child goes in whole or not at all, and the first child
+    always goes in (a table keeps its first rows; an over-large single leaf still gets sent,
+    for Notion to judge). Everything cut is listed in `deferred` as [(index-path, children)]:
+    append `children`, at the end and in list order, to the block reached from the copy by
+    `index-path` once the copy exists (a table's extra rows are appended to the table)."""
     t = block.get("type")
     body = dict(block.get(t) or {})
-    kids = body.pop("children", None) or []
+    kids = list(body.pop("children", None) or [])
     out = {"type": t, t: body}
-    deferred = []
-    if kids:
-        if level >= MAX_NEST:
-            deferred.append(((), kids))
-        else:
-            trimmed = []
-            for k, c in enumerate(kids):
-                cc, dd = _trim(c, level + 1)
-                trimmed.append(cc)
-                deferred.extend(((k,) + path, ch) for path, ch in dd)
-            body["children"] = trimmed
-    return out, deferred
+    n_blocks, n_bytes = 1, _jsize(out)
+    if not kids:
+        return out, [], n_blocks, n_bytes
+    if level >= MAX_NEST:
+        return out, [((), kids)], n_blocks, n_bytes
+    n_bytes += _KIDS_KEY
+    room = (budget[0] - n_blocks, budget[1] - n_bytes)
+    trimmed, deferred = [], []
+    for k, c in enumerate(kids):
+        starved = level + 1 + _NEEDS_KIDS.get(c.get("type"), 0) > MAX_NEST and bool(_kids_of(c))
+        if starved or len(trimmed) >= MAX_CHILDREN:
+            deferred.append(((), kids[k:]))
+            break
+        cc, dd, cb, cy = _trim(c, level + 1, room)
+        cy += 2 if trimmed else 0                   # the ", " before it
+        if trimmed and (n_blocks + cb > budget[0] or n_bytes + cy > budget[1]):
+            deferred.append(((), kids[k:]))
+            break
+        trimmed.append(cc)
+        n_blocks += cb
+        n_bytes += cy
+        deferred.extend(((k,) + path, ch) for path, ch in dd)
+    if trimmed:
+        body["children"] = trimmed
+    elif t in _NEEDS_KIDS:                          # e.g. a column opening with a table
+        raise NotionError("cannot create a %s whose first child needs deeper nesting than one request allows" % t)
+    else:
+        n_bytes -= _KIDS_KEY
+    return out, deferred, n_blocks, n_bytes
+
+
+def _batches(children):
+    """Group top-level blocks into requests of <= MAX_CHILDREN blocks, <= MAX_BLOCKS blocks in
+    all and <= MAX_BYTES of JSON; each entry is [(trimmed block, its deferred list)]."""
+    budget = (MAX_BLOCKS, MAX_BYTES - _ENVELOPE)
+    out, cur, n_blocks, n_bytes = [], [], 0, 0
+    for b in children:
+        tb, dd, cb, cy = _trim(b, 0, budget)
+        if cur and (len(cur) >= MAX_CHILDREN or n_blocks + cb > budget[0] or n_bytes + 2 + cy > budget[1]):
+            out.append(cur)
+            cur, n_blocks, n_bytes = [], 0, 0
+        cur.append((tb, dd))
+        n_blocks += cb
+        n_bytes += cy + (2 if len(cur) > 1 else 0)
+    if cur:
+        out.append(cur)
+    return out
 
 
 def append_children(parent_id, children, after=None, at_start=False):
     """Insert blocks under `parent_id` — at the end (default), at the start, or after block
-    `after` — in batches of 100, appending any nesting deeper than the API's two levels in
-    follow-up calls. Returns the ids of the new top-level blocks, in order.
+    `after` — and return the ids of the new top-level blocks, in order.
+
+    Requests respect Notion's limits (see MAX_*): top-level blocks go in batches of <= 100
+    blocks / <= 1000 blocks counted recursively / <= MAX_BYTES of JSON, and whatever a batch
+    can't carry — nesting deeper than two levels, the 101st+ entry of any children list (e.g.
+    table rows), children past the block/byte budget — is appended in follow-up calls once
+    its parent exists, in order, by the same rules.
 
     (The API answers with the new blocks FIRST, followed by every later sibling, so the
     first len(batch) results are the ones we created.)"""
     ids = []
-    for s in range(0, len(children), MAX_CHILDREN):
-        batch = children[s:s + MAX_CHILDREN]
-        trimmed, deferred = [], []
-        for k, b in enumerate(batch):
-            tb, dd = _trim(b)
-            trimmed.append(tb)
-            deferred.extend(((k,) + path, ch) for path, ch in dd)
+    for batch in _batches(children):
+        trimmed = [tb for tb, _dd in batch]
         body = {"children": trimmed}
         if ids:
             body["position"] = {"type": "after_block", "after_block": {"id": ids[-1]}}
@@ -243,13 +393,17 @@ def append_children(parent_id, children, after=None, at_start=False):
         _die(status, resp, "append blocks")
         new = [b["id"] for b in resp.get("results", [])[:len(trimmed)]]
         if len(new) != len(trimmed):
-            sys.exit("append blocks: Notion returned %d of %d new blocks" % (len(new), len(trimmed)))
+            raise NotionError("append blocks: Notion returned %d of %d new blocks" % (len(new), len(trimmed)))
         ids.extend(new)
-        for path, kids in deferred:
-            target = new[path[0]]
-            for k in path[1:]:
-                target = get_children(target)[k]["id"]
-            append_children(target, kids)
+        listed = {}                      # block id -> its children, fetched once per batch
+        for k, (_tb, deferred) in enumerate(batch):
+            for path, kids in deferred:
+                target = new[k]
+                for i in path:           # later appends only add at the END, so a cached
+                    if target not in listed:     # list's indices stay valid
+                        listed[target] = get_children(target)
+                    target = listed[target][i]["id"]
+                append_children(target, kids)
     return ids
 
 
@@ -756,7 +910,7 @@ def cmd_sync(argv):
 VERBS = {"whoami": cmd_whoami, "check": cmd_check, "read": cmd_read,
          "upload": cmd_upload, "fill": cmd_fill, "sync": cmd_sync}
 # mapped two-way sync of local files <-> Notion (notion.yaml): see notiontree.py
-TREE_VERBS = ("link", "map", "outline", "locate", "status", "push", "pull")
+TREE_VERBS = ("link", "map", "outline", "locate", "diff", "status", "push", "pull")
 
 
 def run(argv):

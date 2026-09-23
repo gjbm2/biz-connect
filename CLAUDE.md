@@ -17,7 +17,9 @@ In the Claude Code REPL:
 
 This makes the plugin's skills available in **every** project after the next session start:
 `gdoc-sync`, `notion-sync`, `notion-notes`, `sheet-io`, `workbook-diff`, `git-flow`, `doc-pipeline`,
-`feedback-ingest`, `register`, `biz-connect-setup`.
+`feedback-ingest`, `register`, `new-submission`, `biz-connect-setup`. Skills (and the
+`bizconnect` command) load only at session start, so start a new session after installing or
+updating.
 
 The non-interactive equivalent (e.g. from a script):
 
@@ -26,25 +28,38 @@ claude plugin marketplace add gjbm2/biz-connect
 claude plugin install biz-connect@biz-connect
 ```
 
+## Running commands
+
+Commands are `bizconnect <service> <verb> ...`: the plugin's `bin/` is on PATH inside Claude
+Code. If `bizconnect` isn't found (plugin installed in this session, or outside Claude Code),
+run the launcher, `scripts/bizconnect.py` in the plugin's folder, with the same arguments. The
+folder is the `installPath` for `biz-connect` in `~/.claude/plugins/installed_plugins.json`
+(usually `~/.claude/plugins/cache/biz-connect/biz-connect/<version>/`). For example,
+`python3 <that folder>/scripts/bizconnect.py doctor` (`py` on Windows). `${CLAUDE_PLUGIN_ROOT}`
+works only inside skill text. In a clone of this repo, use `bin/bizconnect` or
+`scripts/bizconnect.py`.
+
 ## 2. Credentials (once per user) — these NEVER live in any repo
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" init     # creates ~/.config/biz-connect/secrets.env
-#   then: put NOTION_TOKEN=... in that file, and drop your Google service-account.json
-#         into ~/.config/biz-connect/  (or point GOOGLE_SERVICE_ACCOUNT_FILE at it)
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" doctor    # should print OK
+bizconnect init      # creates ~/.config/biz-connect/secrets.env
+#   Notion: put NOTION_TOKEN=... in that file (an internal integration from
+#           https://www.notion.so/profile/integrations with Read, Update and Insert content;
+#           share the hub page with it via ••• → Connections)
+#   Google (only for gdoc/sheet): drop your service-account.json into ~/.config/biz-connect/
+#           (or point GOOGLE_SERVICE_ACCOUNT_FILE at it)
+bizconnect doctor    # reports each part; a missing service account only matters for Google
+bizconnect notion whoami   # verifies the Notion token
 ```
 
-`${CLAUDE_PLUGIN_ROOT}` is set when running as the installed plugin. If you are working
-in a clone of this repo directly, use `./scripts/bizconnect.py` instead. On Windows, if
-`python` opens the Microsoft Store, use `py`.
+The **biz-connect-setup** skill walks through this and its errors.
 
 ## 3. Connect a repo (once per repo)
 
 From the repo root:
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" init      # writes connections.yaml + secret guards
+bizconnect init      # writes connections.yaml + .gitignore guards
 # edit connections.yaml: google.share_with, google.drive_folder, notion.notes_page, ...
 ```
 
@@ -53,16 +68,24 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" init      # writes connecti
 ## 4. Use it
 
 ```bash
-B='python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py"'
-$B gdoc    push|pull|status|link <file.md>   # local Markdown <-> Google Doc
-$B notion  status|push|pull <folder>        # two-way file <-> Notion sync via <folder>/notion.yaml
-$B notion  check|read|upload|fill .          # . = this repo's notion.notes_page
-$B sheet   read|write|append <sheet-url>     # service-account Sheets r/w
-$B git     save|sync|pr                      # safe, standardised git flow
-$B compose status|run|accept|graph           # doc-composition pipeline (needs pipeline.yaml); `run inputs` syncs sources
-$B doctor                                    # diagnose setup
-$B update                                    # check for a newer version
+bizconnect gdoc    push|pull|status|link <file.md>          # local Markdown <-> Google Doc
+bizconnect notion  link|map|outline|locate|diff <args>      # set up / inspect a folder's Notion mapping (notion.yaml)
+bizconnect notion  status|pull|push [<folder or file>]      # two-way file <-> Notion sync
+bizconnect notion  whoami|check|read|upload|fill <page|.>   # . = this repo's notion.notes_page
+bizconnect sheet   read|write|append <sheet-url>            # service-account Sheets r/w
+bizconnect xlsx    diff OLD.xlsx NEW.xlsx                   # structural workbook diff
+bizconnect git     save|sync|pr                             # safe, standardised git flow
+bizconnect compose status|run|accept|graph                  # doc-composition pipeline (needs pipeline.yaml); `run inputs` syncs sources
+bizconnect doctor                                           # diagnose setup
+bizconnect update                                           # check for a newer version
 ```
+
+**Notion sync** (needs biz-connect 0.13 or later; full guide: the **notion-sync** skill): a
+folder's committed `notion.yaml` maps its Markdown files to Notion pages, sections, folders of
+pages or databases. `pull` first in each session, edit the files (not Notion), `push`, then
+commit the files together with `notion.yaml`: it carries the ids and the last-sync
+fingerprints every machine relies on. Never `--force` over other people's Notion edits; on
+`conflict` or `no-baseline`, `bizconnect notion diff <path>` first.
 
 If a connector complains about credentials or Google Docs ownership, run
 `bizconnect doctor` and read the **biz-connect-setup** skill. Full reference: `README.md`.
@@ -70,11 +93,15 @@ If a connector complains about credentials or Google Docs ownership, run
 ## Developing this plugin
 
 - Connectors: `bizconnect/connectors/*.py`; shared engine: `config.py`, `_google.py`,
-  `cli.py`; launcher (bootstraps the central-store venv): `scripts/bizconnect.py`.
+  `cli.py`, `notion_md.py`; launcher (bootstraps the central-store venv):
+  `scripts/bizconnect.py`, exposed as `bin/bizconnect` / `bin/bizconnect.cmd`.
+- Tests: `python -m pytest -q` (the Notion sync runs against `tests/fake_notion.py`, never the
+  live API).
 - Bump `version` in `.claude-plugin/plugin.json` on every release — it drives the daily
-  auto-update nudge (`bizconnect update`).
-- On GM's workstation the plugin (skills and scripts) is loaded straight from this clone, so
-  an edit here is live locally at once. `scripts/release.sh` is what ships it to other
-  machines and users.
+  auto-update nudge (`bizconnect update`). `scripts/release.sh` is what ships a change to
+  other machines and users; commit first (it commits only the bump). Steps:
+  `docs/maintainers.md`.
+- Keep skills and docs generic (no one user's people, companies or repos in examples); see
+  `docs/maintainers.md`.
 - Never commit secrets; the per-user central store (`~/.config/biz-connect`) is their
   only home. `.gitignore` guards key/secret files as a backstop.

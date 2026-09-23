@@ -1,7 +1,7 @@
 ---
 name: feedback-ingest
 description: Run the feedback roundtrip for a compose pipeline — capture reviewer comments and direct edits from the review Google Doc, assimilate them into triaged open points (one high-reasoning pass), persist them to the Notion open-points register, and digest the open gated points into a deliberation brief for the team. Use after reviewers have marked up a rendered submission and you want their feedback lifted into the pipeline so the next drafting turn addresses it. Pairs with the `doc-pipeline` and `register` skills.
-allowed-tools: Bash(python *), Read, Edit, Write
+allowed-tools: Bash(bizconnect *), Bash(python *), Bash(python3 *), Bash(py *), Read, Edit, Write
 ---
 
 # Feedback roundtrip (review → register → next turn)
@@ -11,34 +11,40 @@ into the pipeline as triaged, referenced **open points**, so the next draft is m
 respect to* them. The register (Notion) is the stateful spine; nothing is silently dropped or
 re-surfaced (dedupe is by comment-id).
 
-Run all verbs through the launcher, from inside the consuming repo — or, for an umbrella repo
-that hosts deliverables under `deliverables/<slug>/`, from inside the deliverable folder (the
-engine then scopes the register, docs-registry and Doc binding to that `deliverables.<slug>`).
-Let `final` be the rendered submission (e.g. `final/response.md`) and `FB=response/build/feedback`.
+Run every verb as `bizconnect <service> <verb>`, from inside the consuming repo — or, for an
+umbrella repo that hosts deliverables under `deliverables/<slug>/`, from inside the deliverable
+folder (the engine then scopes the register, docs-registry and Doc binding to that
+`deliverables.<slug>`). The examples use `final/response.md` for the rendered submission and
+`response/build/feedback/` for the pipeline's `feedback_dir`; substitute this repo's paths.
+
+If `bizconnect` isn't found (the plugin was installed in this session, or you're in a
+clone), run the launcher with the same arguments:
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" <service> <verb> ...` (`python` or `py`
+on Windows).
 
 ## The loop
 
 1. **Capture** the feedback into the bundle the assimilate stage reads:
    ```bash
-   BC='python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py"'
-   $BC gdoc comments final/response.md --out $FB/feedback.bundle.md   # anchored comments + threads
-   $BC gdoc diff     final/response.md >> $FB/feedback.bundle.md       # direct edits (unified diff)
+   bizconnect gdoc comments final/response.md --out response/build/feedback/feedback.bundle.md   # anchored comments + threads
+   bizconnect gdoc diff     final/response.md >> response/build/feedback/feedback.bundle.md       # direct edits (unified diff)
    ```
 2. **Refresh** the register projection so assimilate dedupes against current rows:
-   `$BC register pull`
-3. **Assimilate** (the one high-reasoning pass): `$BC compose run assimilate` writes a prompt
-   into `build/`. **You** run it — interpret each item, triage by **disposition** (finesse /
+   `bizconnect register pull`
+3. **Assimilate** (the one high-reasoning pass): `bizconnect compose run assimilate` writes a
+   prompt into `build/`. **You** run it — interpret each item, triage by **disposition** (finesse /
    tonal / rethink / research / discussion), route to the **layer** (answer / spec /
    house-position / prompt), cluster across items — and save the result (a review-cycle plan
-   **plus a ```json deltas block**) to `$FB/cycle.gen.md`.
-4. **Persist** to the register: `$BC register upsert $FB/cycle.gen.md` (creates/updates rows,
-   dedupes by comment-id, appends History, refreshes the projection, journals the cycle).
+   **plus a ```json deltas block**) to `response/build/feedback/cycle.gen.md`.
+4. **Persist** to the register: `bizconnect register upsert response/build/feedback/cycle.gen.md`
+   (creates/updates rows, dedupes by comment-id, appends History, refreshes the projection,
+   journals the cycle).
 5. **Clear the machine-executable points now** (disposition `finesse`/`tonal`): apply the
    edit / re-draft, drop the `[…: ISS-nnn …]` markers the plan specifies, then rebuild only
    what went stale (`compose status` → `compose run draft <id>` → `render`).
 6. **Digest the gated points** (`rethink`/`research`/`discussion`) for the team:
-   `$BC compose run digest` → write `$FB/brief.gen.md` → promote to the brief → `gdoc push`
-   it (or push to the review Doc) for deliberation.
+   `bizconnect compose run digest` → write `response/build/feedback/brief.gen.md` → promote to
+   the brief → `gdoc push` it (or push to the review Doc) for deliberation.
 7. **Decide & close the loop.** The team works the gated rows in Notion; their agreed steps
    become source edits (answer / spec / house-position / prompt). Editing those makes the
    right `compose` targets stale; the **next** `draft`/`spec`/`critique` turn injects the open

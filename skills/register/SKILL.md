@@ -1,7 +1,7 @@
 ---
 name: register
 description: Maintain the open-points register — the Notion-database-backed status table for review feedback (one row per point raised on a draft, with status / disposition / owner / references). Use to create the register, pull it into the local projection, list open or gated points, mark a point resolved, or read the ingestion journal. The register is the stateful spine of the feedback roundtrip; the `compose` assimilate stage writes triaged deltas into it via `register upsert`. See the `feedback-ingest` skill for the full loop.
-allowed-tools: Bash(python *), Read, Edit, Write
+allowed-tools: Bash(bizconnect *), Bash(python *), Bash(python3 *), Bash(py *), Read, Edit, Write
 ---
 
 # Open-points register (`register`)
@@ -23,15 +23,19 @@ Bound per-repo in `connections.yaml` under `notion.register_db` (`database_id`, 
 ## Verbs
 
 ```bash
-BC='python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" register'
-$BC init [--parent <page-url/id>]      # create the Notion DB + write the binding into connections.yaml
-$BC pull                               # query rows -> rewrite the local projection (project_to)
-$BC upsert <deltas.json|cycle.gen.md>  # create/update rows from assimilate output (dedupe by comment-id)
-$BC open  [--question Q07]             # the OPEN points slice (what compose injects as {{OPEN_POINTS}})
-$BC status                             # counts by status/disposition; open-&-gated count; reachability
-$BC resolve ISS-014 [--note "..."]     # mark a point resolved + append History
-$BC journal                            # the per-cycle ingestion journal (audit trail)
+bizconnect register init [--parent <page-url/id>]      # create the Notion DB + write the binding into connections.yaml
+bizconnect register pull                               # query rows -> rewrite the local projection (project_to)
+bizconnect register upsert <deltas.json|cycle.gen.md>  # create/update rows from assimilate output (dedupe by comment-id)
+bizconnect register open  [--question Q07]             # the OPEN points slice (what compose injects as {{OPEN_POINTS}})
+bizconnect register status                             # counts by status/disposition; open-&-gated count; reachability
+bizconnect register resolve ISS-014 [--note "..."]     # mark a point resolved + append History
+bizconnect register journal                            # the per-cycle ingestion journal (audit trail)
 ```
+
+If `bizconnect` isn't found (the plugin was installed in this session, or you're in a
+clone), run the launcher with the same arguments:
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" <service> <verb> ...` (`python` or `py`
+on Windows).
 
 ## Field ownership (do not clobber)
 

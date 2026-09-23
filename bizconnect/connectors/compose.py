@@ -558,18 +558,22 @@ def clean_for_render(text):
     return _strip_inline_markers(body).rstrip()
 
 
-def inject_question(answer_text, qtext):
-    """Place the source question as a subhead directly under the answer's first heading."""
-    if not qtext:
+def inject_question(answer_text, qtext, label="Question"):
+    """Place the source question as a subhead (`> **<label>.** text`) directly under the
+    answer's first heading. An empty label means no subhead."""
+    if not qtext or not label:
         return answer_text
+    head = "%s." % str(label).strip().rstrip(".")
+    sub = "> **%s** %s" % (head, qtext.strip())
     lines = answer_text.split("\n")
     for i, ln in enumerate(lines):
         if ln.lstrip().startswith("#"):
-            if i + 1 < len(lines) and "question." in lines[i + 1].lower():
+            nxt = lines[i + 1].lower() if i + 1 < len(lines) else ""
+            if "question." in nxt or head.lower() in nxt:          # already carries one
                 return answer_text
-            lines[i + 1:i + 1] = ["", "> **Ofgem's question.** %s" % qtext.strip()]
+            lines[i + 1:i + 1] = ["", sub]
             return "\n".join(lines)
-    return "> **Ofgem's question.** %s\n\n%s" % (qtext.strip(), answer_text)
+    return "%s\n\n%s" % (sub, answer_text)
 
 
 def parse_open_points(text, qid):
@@ -669,10 +673,11 @@ def run_render(cfg):
     sub = cfg.loc("submission")
     if sub and cfg.read(sub):
         parts += [clean_for_render(cfg.read(sub)), "", "---", ""]
+    label = cfg.g("question_label", "Question")
     for it in load_items(cfg):
         a = cfg.read("%s/%s.md" % (A, it["pad"]))
         if a:
-            parts += [inject_question(clean_for_render(a), it.get("text", "")), "", "---", ""]
+            parts += [inject_question(clean_for_render(a), it.get("text", ""), label), "", "---", ""]
     cfg.ap(final).write_text("\n".join(parts), encoding="utf-8")
     return "wrote %s" % final
 

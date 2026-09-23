@@ -161,3 +161,49 @@ def test_front_matter_and_title():
     title, body = M.split_title(rest)
     assert title == "Title x" and body.strip() == "Body"
     assert M.split_front_matter("no fm") == (None, "no fm")
+
+
+def _R(t, **a):
+    return {"type": "text", "text": {"content": t}, "plain_text": t, "annotations": {k: True for k in a}}
+
+
+@pytest.mark.parametrize("rich", [
+    [_R("headed in the right direction "), _R("for a true agent ", italic=1), _R("— this is diff.")],  # trailing space
+    [_R("direction"), _R(" for a true agent", italic=1), _R(" — this")],                            # leading space
+    [_R("x"), _R(" y ", bold=1), _R("z")],
+    [_R("a "), _R("b", bold=1, italic=1), _R(" c")],
+    [_R("see "), _R("the ", bold=1), _R("docs", bold=1, italic=1), _R(" now")],
+    [_R("a", italic=1), _R("b", bold=1)],                     # `*a***b**` misparsed
+    [_R("a", bold=1), _R("b", bold=1, italic=1)],
+    [_R("Q3", italic=1), _R("2026", bold=1), _R(" plan")],
+    [_R("a", italic=1), _R("b", bold=1), _R("c", italic=1)],
+    [_R(" code ", code=1)],                                   # a re-parse strips one space each side
+    [_R("x "), _R(" code ", code=1), _R(" y")],
+])
+def test_pull_then_push_keeps_styled_blocks(rich):
+    """Regression (v0.12): a styled run with edge spaces rendered differently from its re-parse,
+    so a pull followed by an unrelated push re-created the unchanged block. Likewise adjacent
+    differently-styled runs, and inline code with a space at both ends."""
+    blk = {"type": "paragraph", "paragraph": {"rich_text": rich}, "id": "r"}
+    pulled = M.render_blocks([blk], markers=True)
+    assert M.signature(blk) == M.signature(M.parse_blocks(pulled)[0])
+
+
+def test_bold_italic_triple_delimiters():
+    for md in ("***both***", "___both___"):
+        segs = [M._seg_parts(r) for r in M.parse_inline("x " + md + ".")]
+        assert segs[1] == ("both", None, (True, True, False, False)), md
+
+
+def test_bom_before_front_matter():
+    fm, rest = M.split_front_matter("﻿---\ndate: 2026-01-01\n---\n# T\n")
+    assert fm == "date: 2026-01-01\n" and rest.startswith("# T")
+
+
+def test_escaped_pipe_in_table_code_cell():
+    md = "| a | b |\n|---|---|\n| `x\\|y` | z |"
+    b1 = M.parse_blocks(md)
+    cell = b1[0]["table"]["children"][1]["table_row"]["cells"][0]
+    assert [M._seg_parts(r)[0] for r in cell] == ["x|y"]
+    r1 = M.render_blocks(b1)
+    assert M.render_blocks(M.parse_blocks(r1)) == r1
