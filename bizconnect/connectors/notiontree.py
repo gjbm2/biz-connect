@@ -44,6 +44,10 @@ from the last sync (`.bizconnect/state.json`, git-ignored), so
             new-local | new-remote | local-deleted | remote-deleted | missing.
 
 `--force` overrides the guard; `--prune` lets push archive database rows whose file was deleted.
+Push reports what it changed (blocks added / removed / unchanged, and where), and warns on
+paragraphs over the house-style limit (`style: {max_para_words: N}` in notion.yaml or
+connections.yaml `notion.style`; default 80, 0 = off). The mapping file and sync state are
+merged on save, so concurrent sessions syncing the same folder don't drop each other's ids.
 Pushes are minimal: blocks are diffed by signature (a block's signature is its Markdown), so
 unchanged Notion blocks — with their comments — are untouched, and blocks Markdown can't express
 (child pages, databases, embeds, files ...) are never removed.
@@ -55,6 +59,8 @@ Verbs (under `bizconnect notion`)
                                              [--in X] [--title T]
                                              add a mapping entry (path relative to cwd)
   outline <page|url|dir>                     a page's headings / child pages / databases, with ids
+  locate  <page-url#block-id> [--map F]      where a linked block lives: its text, its section, the
+                                             file that maps it; --map F maps + pulls an unmapped section
   status  [path] [--deep]                    per-item verdicts
   push    [path] [--dry-run] [--force] [--prune]
   pull    [path] [--dry-run] [--force]
@@ -317,6 +323,71 @@ def infer_type(values):
     return "rich_text"
 
 
+# ============================================================ manifest merge & style
+TOOL_KEYS = ("id", "ids", "media")       # the fields the tool (not people) writes into map entries
+DEFAULT_STYLE = {"max_para_words": 80}   # push warns (never blocks) on paragraphs longer than this
+
+
+def _atomic_write(path, text):
+    tmp = Path(str(path) + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _entry_path(e):
+    return str(e.get("path") or "").strip().strip("/")
+
+
+def _tool_fields(man):
+    """path -> {tool key: plain value} for every map entry."""
+    return {_entry_path(e): {k: (dict(e[k]) if isinstance(e[k], dict) else e[k]) for k in TOOL_KEYS if k in e}
+            for e in (man.get("map") or [])}
+
+
+def _merge_tool_fields(man, base, mine):
+    """Apply the tool-field changes we made (base -> mine) onto `man`, the disk version.
+    Entries only the disk version has are kept; entries it dropped are not resurrected."""
+    from ruamel.yaml.comments import CommentedMap
+    disk = {_entry_path(e): e for e in (man.get("map") or [])}
+    for path, fields in mine.items():
+        e = disk.get(path)
+        if e is None:
+            continue
+        old_fields = base.get(path, {})
+        for k in TOOL_KEYS:
+            new, old = fields.get(k), old_fields.get(k)
+            if new == old:
+                continue
+            if isinstance(new, dict) or isinstance(old, dict):
+                new, old = new or {}, old or {}
+                cur = e.get(k) if isinstance(e.get(k), dict) else CommentedMap()
+                for kk in set(old) - set(new):
+                    cur.pop(kk, None)
+                for kk, vv in new.items():
+                    if old.get(kk) != vv:
+                        cur[kk] = vv
+                if cur:
+                    e[k] = cur
+                else:
+                    e.pop(k, None)
+            elif new is None:
+                e.pop(k, None)
+            else:
+                e[k] = new
+
+
+def _style(man):
+    """House-style limits: DEFAULT_STYLE < connections.yaml `notion.style` < notion.yaml `style`."""
+    out = dict(DEFAULT_STYLE)
+    try:
+        data, _p = config.load_connections()
+        out.update(((data or {}).get("notion") or {}).get("style") or {})
+    except Exception:
+        pass
+    out.update(man.get("style") or {})
+    return out
+
+
 # ============================================================ state
 def _state_path(root):
     return Path(root) / STATE_DIR / STATE_FILE
@@ -335,7 +406,7 @@ def load_state(root):
 def save_state(root, full):
     p = _state_path(root)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(full, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _atomic_write(p, json.dumps(full, indent=2, ensure_ascii=False) + "\n")
     gi = p.parent / ".gitignore"
     if not gi.exists():
         gi.write_text("*\n", encoding="utf-8")
@@ -485,14 +556,18 @@ class Tree:
         self.dir = self.mpath.parent
         rel = self.dir.relative_to(self.root).as_posix()
         self.key = "" if rel == "." else rel
-        self.man = _yaml_rt().load(self.mpath.read_text(encoding="utf-8")) or {}
+        self._loaded_text = self.mpath.read_text(encoding="utf-8")
+        self.man = _yaml_rt().load(self._loaded_text) or {}
         if not self.man.get("hub"):
             raise SyncError("%s has no `hub:`" % self.mpath)
         self.hub = N.norm_id(str(self.man["hub"]))
         self.link_base = self.man.get("link_base") or None
+        self.style = _style(self.man)
         self.dry, self.force, self.prune, self.deep, self.out = dry, force, prune, deep, out
+        self._loaded_tool = _tool_fields(self.man)     # what save() diffs against (see save)
         self.full_state = load_state(self.root)
         self.state = self.full_state.setdefault(STATE_KEY, {}).setdefault(self.key or ".", {})
+        self._state0 = json.loads(json.dumps(self.state))
         self.items = {}
         self.row_ids = {}                 # row key -> page id
         self.created = set()
@@ -1058,6 +1133,7 @@ class Tree:
         if vd in ("remote-ahead", "conflict") and not self.force:
             self.note(vd, k, "changed in Notion since the last sync — pull first (or push --force)")
             return
+        self.style_check(k, v["local_blocks"])
         if self.dry:
             self.note("would-push", k, vd)
             return
@@ -1066,8 +1142,12 @@ class Tree:
             st, r = N.api("PATCH", "/pages/%s" % pid, body={"properties": {"title": {"title": _rich(ld["title"])}}})
             _die(st, r, "set title %s" % k)
         start = v["heading"]["id"] if it["kind"] == "section" else None
-        self.apply_body(pid, v["blocks"] or [], v["local_blocks"], self.fr(it), it, start_after=start,
-                        exclude=self._attached_ids(pid))
+        n = self.apply_body(pid, v["blocks"] or [], v["local_blocks"], self.fr(it), it, start_after=start,
+                            exclude=self._attached_ids(pid))
+        where = ("under %r" % M.plain(v["heading"][v["heading"]["type"]].get("rich_text"))
+                 if it["kind"] == "section" else "on its page")
+        summary = "%s · %d block(s) added, %d removed, %d unchanged — only %s" % (
+            vd, n["added"], n["removed"], n["kept"], where)
         self.invalidate(pid)
         v2 = self.doc_view(it)
         self._learn_media(it, v2["blocks"] or [], v2["local_blocks"], self.fr(it))
@@ -1075,11 +1155,27 @@ class Tree:
         if v2["remote_canon"] != v2["local_canon"]:
             self.out("  ! %s: Notion normalised the content differently than expected" % k)
         self.record(k, local_sha=ld["sha"], remote_sha=_sha(v2["remote_canon"] or ""))
-        self.note("pushed", k, vd)
+        self.note("pushed", k, summary)
+
+    def style_check(self, key, blocks):
+        """Warn (never block) on paragraphs over the house-style word limit."""
+        mx = self.style.get("max_para_words")
+        if not mx:
+            return
+        n = 0
+        for b in blocks:
+            if b.get("type") != "paragraph":
+                continue
+            n += 1
+            words = len(M.plain(b["paragraph"].get("rich_text")).split())
+            if words > int(mx):
+                self.out("  ~ %s: paragraph %d is %d words (house style max %s) — split it: a lead "
+                         "line, then short bullets" % (key, n, words, mx))
 
     def apply_body(self, parent_id, remote_blocks, local_blocks, fr, it, start_after=None, exclude=()):
         """Minimal block diff: keep matching blocks, insert new ones, delete removed ones.
-        Blocks Markdown can't express, and `exclude`d ids, are never touched."""
+        Blocks Markdown can't express, and `exclude`d ids, are never touched.
+        Returns {"added", "removed", "kept"} top-level block counts."""
         rhref, lhref = self.href_remote(fr), self.href_local(fr)
         rmedia, lmedia = self.media_remote(it, fr), self.media_local(fr)
         managed = [b for b in remote_blocks if M.is_managed(b) and b["id"] not in exclude]
@@ -1097,13 +1193,16 @@ class Tree:
                 cur = [anchor, []]
                 groups.append(cur)
             cur[1].append(b)
+        added = 0
         for anchor_id, blocks in groups:
             api_blocks = [x for x in (self.to_api(b, fr) for b in blocks) if x]
             if api_blocks:
                 N.append_children(parent_id, api_blocks, after=anchor_id, at_start=anchor_id is None)
+                added += len(api_blocks)
         for i, b in enumerate(managed):
             if i not in matched_r:
                 N.delete_block(b["id"])
+        return {"added": added, "removed": len(managed) - len(matched_r), "kept": len(pairs)}
 
     def to_api(self, block, fr):
         """Parsed block -> API payload: resolve links, chunk long text, upload local images."""
@@ -1734,15 +1833,31 @@ class Tree:
 
     # ================================================================ persist
     def save(self):
+        """Write back the ids/media we learned and the sync state. Several sessions may sync
+        the same folder at once, so both files are merged, not overwritten: if the file
+        changed on disk since we read it (another session's `map` or `pull`), only OUR
+        changes (tool-written fields / touched state keys) are applied to the disk version."""
         if self.dry:
             return
-        text = self.mpath.read_text(encoding="utf-8")
         import io
+        y = _yaml_rt()
+        disk = self.mpath.read_text(encoding="utf-8")
+        man = self.man
+        if disk != self._loaded_text:
+            man = y.load(disk) or {}
+            _merge_tool_fields(man, self._loaded_tool, _tool_fields(self.man))
         buf = io.StringIO()
-        _yaml_rt().dump(self.man, buf)
-        if buf.getvalue() != text:
-            self.mpath.write_text(buf.getvalue(), encoding="utf-8")
-        save_state(self.root, self.full_state)
+        y.dump(man, buf)
+        if buf.getvalue() != disk:
+            _atomic_write(self.mpath, buf.getvalue())
+        full = load_state(self.root)
+        cur = full.setdefault(STATE_KEY, {}).setdefault(self.key or ".", {})
+        for k in set(self._state0) | set(self.state):
+            if k not in self.state:
+                cur.pop(k, None)
+            elif self.state[k] != self._state0.get(k):
+                cur[k] = self.state[k]
+        save_state(self.root, full)
 
 
 # ============================================================ CLI plumbing
@@ -1897,19 +2012,8 @@ def cmd_map(argv):
     if not pos:
         sys.exit("map needs <path> and one of --section H | --page URL|new | --database [URL|new]")
     root = _repo_root()
-    p = Path(pos[0])
-    p = (p if p.is_absolute() else Path.cwd() / p).resolve()
-    mpath, _scope = manifest_for(root, str(p.parent if not p.exists() else p))
-    rel = p.relative_to(mpath.parent).as_posix()
-    y = _yaml_rt()
-    data = y.load(mpath.read_text(encoding="utf-8")) or {}
-    from ruamel.yaml.comments import CommentedMap, CommentedSeq
-    seq = data.get("map")
-    if not isinstance(seq, list):
-        seq = CommentedSeq()
-        data["map"] = seq
-    if any(str(e.get("path", "")).strip("/") == rel.strip("/") for e in seq):
-        sys.exit("%s is already mapped in %s" % (rel, mpath))
+    mpath, rel = _manifest_and_rel(root, pos[0])
+    from ruamel.yaml.comments import CommentedMap
     e = CommentedMap()
     e["path"] = rel
     if opt("--section"):
@@ -1927,13 +2031,34 @@ def cmd_map(argv):
     for f, key in (("--in", "in"), ("--title", "title"), ("--level", "level")):
         if opt(f):
             e[key] = int(opt(f)) if key == "level" else opt(f)
+    _append_entry(mpath, e)
+    print("mapped %s -> %s in %s" % (rel, {k: v for k, v in e.items() if k != "path"}, mpath))
+    return 0
+
+
+def _manifest_and_rel(root, arg):
+    """(manifest governing a local path, that path relative to the manifest's folder)."""
+    p = Path(arg)
+    p = (p if p.is_absolute() else Path.cwd() / p).resolve()
+    mpath, _scope = manifest_for(root, str(p.parent if not p.exists() else p))
+    return mpath, p.relative_to(mpath.parent).as_posix()
+
+
+def _append_entry(mpath, e):
+    y = _yaml_rt()
+    data = y.load(mpath.read_text(encoding="utf-8")) or {}
+    from ruamel.yaml.comments import CommentedSeq
+    seq = data.get("map")
+    if not isinstance(seq, list):
+        seq = CommentedSeq()
+        data["map"] = seq
+    if any(_entry_path(x) == _entry_path(e) for x in seq):
+        sys.exit("%s is already mapped in %s" % (e["path"], mpath))
     seq.append(e)
     import io
     buf = io.StringIO()
     y.dump(data, buf)
-    mpath.write_text(buf.getvalue(), encoding="utf-8")
-    print("mapped %s -> %s in %s" % (rel, {k: v for k, v in e.items() if k != "path"}, mpath))
-    return 0
+    _atomic_write(mpath, buf.getvalue())
 
 
 def cmd_outline(argv):
@@ -1958,4 +2083,107 @@ def cmd_outline(argv):
         elif t in ("file", "pdf", "image", "video", "audio"):
             nm = b[t].get("name") or urllib.parse.unquote((b[t].get(b[t].get("type"), {}) or {}).get("url", "").split("?")[0].split("/")[-1])
             print("      📎 %s  [%s %s]" % (nm, t, b["id"]))
+    return 0
+
+
+PLACEHOLDER = re.compile(r"^\s*(\[.*\]|tbc|tbd|todo|to follow|to come|placeholder|\.\.\.|…)?\s*$", re.I)
+
+
+def _block_text(b):
+    t = b.get("type")
+    return M.plain((b.get(t) or {}).get("rich_text")) if t else ""
+
+
+def cmd_locate(argv):
+    """Resolve a block link (…#<block-id>): its text, the section holding it, and the file that
+    maps it. `--map <file>` maps an unmapped section to a new file and pulls it, ready to edit."""
+    map_to = argv[argv.index("--map") + 1] if "--map" in argv and argv.index("--map") + 1 < len(argv) else None
+    pos = [a for a in argv if not a.startswith("--") and a != map_to]
+    if not pos:
+        sys.exit("locate needs a block link: <page-url>#<block-id>")
+    pid, bid = _url_ids(pos[0])
+    if not bid:
+        sys.exit("that link has no #<block-id> — for a whole page use `outline`")
+    st, blk = N.api("GET", "/blocks/%s" % bid)
+    if st >= 300 or not _alive(blk):
+        sys.exit("cannot read block %s [%s] — deleted, or not shared with the integration?" % (bid, st))
+    top = blk                                   # climb to its top-level ancestor on the page
+    for _ in range(20):
+        par = top.get("parent") or {}
+        if par.get("type") != "block_id":
+            pid = N.norm_id(par["page_id"]) if par.get("type") == "page_id" else pid
+            break
+        st, top = N.api("GET", "/blocks/%s" % par["block_id"])
+        _die(st, top, "read parent block")
+    kids = N.get_children(pid)
+    idx = next((i for i, b in enumerate(kids) if b["id"] == top["id"]), None)
+    if idx is None:
+        sys.exit("block %s is not on page %s" % (bid, pid))
+    head = kids[idx] if kids[idx].get("type") in HEADINGS else \
+        next((b for b in reversed(kids[:idx]) if b.get("type") in HEADINGS), None)
+    region = []
+    if head is not None:
+        lvl, start = heading_level(head), kids.index(head)
+        for b in kids[start + 1:]:
+            if b.get("type") in HEADINGS and heading_level(b) <= lvl:
+                break
+            region.append(b)
+    text = _block_text(blk)
+    ph = "  (looks like a placeholder)" if PLACEHOLDER.match(text) else ""
+    print("block    %s  %s: %r%s" % (blk["id"], blk.get("type"), text[:120] + ("…" if len(text) > 120 else ""), ph))
+    print("page     %s  %s" % (page_title(get_page(pid)), NOTION_URL + _hex(pid)))
+    htext = _block_text(head) if head is not None else None
+    if head is None:
+        print("section  none — it sits above the page's first heading (only a whole-page mapping holds it)")
+    else:
+        print("section  %s %s  — %d block(s) under it%s" % ("#" * heading_level(head), htext, len(region),
+                                                      " (only this one)" if len(region) == 1 and region[0]["id"] == top["id"] else ""))
+    # which mapped file (if any) owns it — the innermost mapped section, or a whole-page entry
+    root = _repo_root()
+    hits = []
+    for m in find_manifests(root):
+        try:
+            t = Tree(root, m, dry=True, out=lambda *a: None)
+        except SyncError:
+            continue
+        for k, it in t.items.items():
+            try:
+                if it["kind"] == "section" and t.container_id(it) == pid:
+                    _p, h, reg = t.find_section(it)
+                    if h is not None and top["id"] in {h["id"]} | {b["id"] for b in reg}:
+                        hits.append((len(reg), m, k))
+                elif it["kind"] == "page" and t._id(it) == pid:
+                    hits.append((10 ** 9, m, k))
+            except SyncError:
+                continue
+    rel = lambda m, k: (m.parent / k).relative_to(root).as_posix()
+    if hits:
+        _n, m, k = min(hits, key=lambda h: h[0])
+        f = rel(m, k)
+        print("mapped   %s  (in %s)" % (f, m.relative_to(root).as_posix()))
+        print("next     notion pull %s  →  edit that block's text in the file  →  notion push %s" % (f, f))
+        return 0
+    if not map_to:
+        print("mapped   no")
+        if head is not None:
+            print("next     notion locate <this link> --map <project-folder>/<name>.md   (maps %r, pulls it)" % htext)
+        return 0
+    if head is None:
+        sys.exit("can't --map: the block isn't under a heading")
+    mpath, frel = _manifest_and_rel(root, map_to)
+    if (mpath.parent / frel).exists():
+        sys.exit("%s already exists — pick a new file name, or map it by hand with `map`" % map_to)
+    from ruamel.yaml.comments import CommentedMap
+    e = CommentedMap()
+    e["path"], e["section"], e["id"] = frel, htext, head["id"]
+    man = _yaml_rt().load(mpath.read_text(encoding="utf-8")) or {}
+    if N.norm_id(str(man.get("hub"))) != pid:
+        e["in"] = NOTION_URL + _hex(pid)
+    _append_entry(mpath, e)
+    t = Tree(root, mpath)
+    t.pull(frel)
+    t.save()
+    _report(t, "pull")
+    f = rel(mpath, frel)
+    print("next     edit %s (write only that block's replacement)  →  notion push %s" % (f, f))
     return 0

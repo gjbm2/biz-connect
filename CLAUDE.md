@@ -73,5 +73,8 @@ If a connector complains about credentials or Google Docs ownership, run
   `cli.py`; launcher (bootstraps the central-store venv): `scripts/bizconnect.py`.
 - Bump `version` in `.claude-plugin/plugin.json` on every release — it drives the daily
   auto-update nudge (`bizconnect update`).
+- On GM's workstation the plugin (skills and scripts) is loaded straight from this clone, so
+  an edit here is live locally at once. `scripts/release.sh` is what ships it to other
+  machines and users.
 - Never commit secrets; the per-user central store (`~/.config/biz-connect`) is their
   only home. `.gitignore` guards key/secret files as a backstop.

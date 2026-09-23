@@ -24,7 +24,7 @@ Verbs
   sync   <page|url|.> --out DIR       one-way MIRROR of a hub page (sub-pages, databases,
                                         files, links) into a local dir [--exclude id,id]
                                         [--depth N] [--no-files] [--no-follow]
-  link | map | outline | status | push | pull    two-way mapped sync (below)
+  link | map | outline | locate | status | push | pull    two-way mapped sync (below)
 """
 from __future__ import annotations
 
@@ -756,7 +756,7 @@ def cmd_sync(argv):
 VERBS = {"whoami": cmd_whoami, "check": cmd_check, "read": cmd_read,
          "upload": cmd_upload, "fill": cmd_fill, "sync": cmd_sync}
 # mapped two-way sync of local files <-> Notion (notion.yaml): see notiontree.py
-TREE_VERBS = ("link", "map", "outline", "status", "push", "pull")
+TREE_VERBS = ("link", "map", "outline", "locate", "status", "push", "pull")
 
 
 def run(argv):

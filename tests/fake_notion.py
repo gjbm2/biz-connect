@@ -194,6 +194,10 @@ class FakeNotion:
     def _out(self, bid):
         b = copy.deepcopy(self.blocks[bid])
         b["has_children"] = bool(self.kids.get(bid))
+        par = self.parent.get(bid)
+        if par:
+            b["parent"] = ({"type": "page_id", "page_id": par} if par in self.pages
+                           else {"type": "block_id", "block_id": par})
         if b["type"] in ("child_page",) and bid in self.pages:
             b["child_page"]["title"] = "".join(r["plain_text"] for r in self.pages[bid]["properties"]["title"]["title"])
         return b

@@ -1,6 +1,6 @@
 ---
 name: notion-sync
-description: Keep a project folder's Markdown files and a Notion hub in two-way sync through a mapping file (notion.yaml) — each file mapped to a whole Notion page, to the SECTION of a page under a heading, or (a folder of front-matter files) to a Notion database. Use when the user wants project notes/state/research "in Notion", to publish local Markdown into sections of an existing hand-built Notion page, to pull people's Notion edits back into the repo, to add or change a mapping, to fill in a placeholder the user links to (a URL ending in #<block-id> means fill in THAT ONE BLOCK only), or to check what's out of sync. Guarded both ways; never touches unmapped Notion content.
+description: Keep a project folder's Markdown files and a Notion hub in two-way sync through a mapping file (notion.yaml) — each file mapped to a whole Notion page, to the SECTION of a page under a heading, or (a folder of front-matter files) to a Notion database. Use when the user wants project notes/state/research "in Notion", to publish local Markdown into sections of an existing hand-built Notion page, to pull people's Notion edits back into the repo, to add or change a mapping, to fill in or update a block the user links to (a URL ending in #<block-id>: fill in that one slot only, via `notion locate`), or to check what's out of sync. Guarded both ways; never touches unmapped Notion content.
 allowed-tools: Bash(python *), Read, Edit, Write
 ---
 
@@ -10,6 +10,52 @@ Agents work on Markdown in the repo (versioned by git); people read and edit in 
 `notion.yaml` in the project folder says which file lives where in Notion, and `push` / `pull`
 move changes across — **guarded in both directions**, so neither side silently overwrites the
 other.
+
+## Quick path: "fill in / update this block" (a link ending in `#<block-id>`)
+
+The link points at **one block**, usually a placeholder like "[to follow]". The scope is that
+slot. Replace it, and touch nothing else on the page: not the rest of its section, and not the
+page's other placeholders. "One block" limits **where** you write, not **how**. The replacement
+can be a bold lead line plus a few short bullets if that reads better. Context the user gives
+("given project X") is what you write *from*.
+
+Aim for about five tool calls:
+
+```bash
+B='python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" notion'
+$B locate "<link>"                               # block text, its section, the file that maps it
+$B locate "<link>" --map projects/x/<name>.md    # only if it says "mapped no": maps the section and pulls it
+#   write the replacement into the file, changing only that block's lines
+$B push projects/x/<name>.md                     # prints "N added, 1 removed, M unchanged — only under '<heading>'"
+git add projects/x/<name>.md projects/x/notion.yaml && git commit -m "..." && git push
+```
+
+- **Already mapped?** `locate` names the file. `pull` it, edit only the target block's lines,
+  then `push`.
+- **No `--force`.** `--map` pulls the placeholder first, so replacing it is an ordinary push.
+- **The push line is the check.** Don't re-read the page unless it reports something odd.
+- **Research in proportion.** For an internal background block (a bio, a definition, context),
+  use what's already in the project folder plus one or two good sources, such as the person's
+  own firm bio and one web search. The verbatim, primary-source bar is for quotes and
+  outward-facing deliverables.
+- **If the tool can't do it, say so.** Don't read the tool's source or call the API by hand.
+- **Commit only your own file and your `notion.yaml` entry.** Other sessions may have
+  uncommitted work in the same folder.
+
+## Writing style
+
+Follow the repo's house style if it has one (e.g. a "House style" section in its CLAUDE.md).
+Otherwise:
+
+- Lead with the answer, in one bold line.
+- Keep paragraphs to 3 sentences or about 60 words. Put parallel facts (a career, a list of
+  options) in bullets, one line each.
+- Label inference once, on its own line ("Our reading: ...").
+- Put sources on one line at the end, not after every clause.
+- Match the form of the page around it.
+
+`push` warns about any paragraph over `style.max_para_words` (default 80; set it in `notion.yaml`
+as `style: {max_para_words: 60}`, or repo-wide in connections.yaml under `notion.style`).
 
 ## The mapping file
 
@@ -61,6 +107,7 @@ map:
 B='python "${CLAUDE_PLUGIN_ROOT}/scripts/bizconnect.py" notion'
 $B link    projects/x <hub-url>                                  # create projects/x/notion.yaml
 $B outline projects/x                                            # the hub's headings / sub-pages / dbs, with ids
+$B locate  "<page-url>#<block-id>" [--map projects/x/f.md]       # where a linked block lives (+ map/pull its section)
 $B map     projects/x/thesis.md --section "What we think"        # add entries (or edit notion.yaml)
 $B map     projects/x/hub/insights.md --page <url>
 $B map     projects/x/notes/a.md --page new [--in thesis.md]
@@ -87,39 +134,14 @@ both sides), `new-local`, `new-remote`, `local-deleted`, `remote-deleted`, and `
 2. Edit the Markdown files, then `push`, then commit the files **and `notion.yaml`** (the ids
    it recorded). "Done" means pushed **and** committed.
 3. **First mapping onto a section people already wrote in:** `pull` it first to get their text.
-   `push` refuses to overwrite hand-written content it has never synced. Use `push --force` only
-   when the Notion text is a placeholder meant to be replaced (e.g. "[populate from research]"),
-   and say so to the user.
+   `push` refuses to overwrite hand-written content it has never synced (`locate --map` and
+   `pull` avoid this, because they sync the current text first). Use `push --force` only when
+   the Notion text is a placeholder meant to be replaced (e.g. "[populate from research]"), and
+   say so to the user.
 4. **Conflicts:** never `--force` blindly. Run `status`, look at both versions, merge the
    Notion changes into the file by hand (or ask the user), then `push --force` that one path.
 5. `--prune` archives database rows whose files were deleted locally. It's off by default.
 6. Row verdicts use a cheap timestamp check. Use `status --deep` to re-read every row body.
-
-## A link to ONE block = fill in that one block, nothing else
-
-A Notion URL ending in `#<32 hex chars>` (e.g. `…/Project-X-3e4e…?source=copy_link#3e4e4fd0…0823`)
-points at **a single block**, usually a placeholder like "[to follow]". When the user shares a
-link like that ("fill this in", "fill in sensibly"), the scope is **that one block**. Leave the
-rest of its section alone, don't fill the page's other placeholders, and don't restructure
-anything. Any context they give ("given project X as context") is what to write *from*. It
-doesn't widen what you write *to*.
-
-1. **Resolve it first.** The fragment is the block id. Find the block and the heading above it:
-   `outline` lists headings with their ids, and the block's position among the page's children
-   shows which section holds it. Say which block it is (its current text and its heading)
-   before you write anything.
-2. **Write one block's worth.** The replacement is a single block, normally one paragraph (links
-   and bold are fine). Don't turn it into a heading plus a bulleted list.
-3. **Push through the mapping, scoped to one path:**
-   - If the block is the **only** block under its heading, map that section to a file (`map
-     <file> --section "<heading>"`), write the one paragraph under the file's `# H1`, and run
-     `push <file> --force`. That's allowed because it's a placeholder, but say so.
-   - If the section has **other blocks**, map it and `pull` it first. Then edit only that
-     block's text in the file and `push <file>`. Unchanged blocks are left alone, so only the
-     target is rewritten.
-4. **Check the result:** the section now holds the one filled block, and the page's other blocks
-   are untouched. Report any unrelated changes you see (e.g. a person editing at the same
-   time) rather than "fixing" them.
 
 ## What round-trips
 
@@ -137,3 +159,5 @@ alone.
 - `cannot read page` / 404: share the page with the integration (••• → Connections).
   `notion whoami` shows which integration the token is.
 - Credentials are in the central store (`bizconnect doctor`). No Notion MCP is needed.
+- Several sessions syncing one folder is safe: `notion.yaml` and the sync state are merged on
+  save, so nobody's ids get dropped.

@@ -427,3 +427,74 @@ def test_scoped_push_of_one_note_creates_its_folder_page(env):
     (env["proj"] / "research" / "b.md").write_text("# B\n\ny\n", encoding="utf-8")
     res, _ = run(env, "push", scope="research/a.md")
     assert res == {"research/": "created", "research/a.md": "pushed"}
+
+
+def test_save_merges_a_concurrent_manifest_edit(env):
+    """Another session's `map` lands between our load and save: its entry survives, our ids land."""
+    manifest(env, MAP % env["sub"])
+    t = tree(env)
+    m = env["proj"] / "notion.yaml"
+    m.write_text(m.read_text(encoding="utf-8") + "  - path: who.md\n    section: What do we know?\n", encoding="utf-8")
+    t.pull()
+    t.save()
+    txt = m.read_text(encoding="utf-8")
+    assert "path: who.md" in txt                      # theirs kept
+    assert txt.count("id: ") == 2                     # ours (josh.md, nous.md heading ids) written
+    res, _ = run(env, "status")
+    assert res == {"who.md": "new-remote"}
+
+
+def test_save_merges_concurrent_state(env):
+    manifest(env, MAP % env["sub"])
+    a, b = tree(env), tree(env)                       # two sessions load the same state
+    a.pull("josh.md")
+    b.pull("nous.md")
+    a.save()
+    b.save()                                          # must not drop a's record of josh.md
+    res, _ = run(env, "status")
+    assert res == {"insights.md": "new-remote"}
+
+
+def test_push_reports_what_it_changed(env):
+    manifest(env, MAP % env["sub"])
+    run(env, "pull")
+    (env["proj"] / "josh.md").write_text("# What does Josh think?\n\n**Lead line.**\n\n- one\n- two\n",
+                                         encoding="utf-8")
+    t = tree(env)
+    t.push()
+    msg = next(m for v, k, m in t.results if k == "josh.md")
+    assert "3 block(s) added, 1 removed, 0 unchanged" in msg and "under 'What does Josh think?'" in msg
+
+
+def test_push_warns_on_long_paragraphs(env):
+    manifest(env, "style: {max_para_words: 10}\n" + MAP % env["sub"])
+    run(env, "pull")
+    (env["proj"] / "josh.md").write_text("# What does Josh think?\n\n" + "word " * 30 + "\n\n- short bullet\n",
+                                         encoding="utf-8")
+    said = []
+    t = T.Tree(env["root"], env["proj"] / "notion.yaml", out=said.append, dry=True)
+    t.push()
+    assert any("paragraph 1 is 30 words (house style max 10)" in s for s in said)
+
+
+def test_locate_maps_and_pulls_an_unmapped_section(env, capsys):
+    manifest(env, "map: []\n")
+    fake, hub = env["fake"], env["hub"]
+    bid = fake.ids_of(hub)[1]                                          # "[populate from agentic research]"
+    link = "https://www.notion.so/Project-X-%s#%s" % (hub.replace("-", ""), bid.replace("-", ""))
+    assert T.cmd_locate([link]) == 0
+    out = capsys.readouterr().out
+    assert "placeholder" in out and "# What does Josh think?" in out and "(only this one)" in out
+    assert "mapped   no" in out
+    assert T.cmd_locate([link, "--map", str(env["proj"] / "josh.md")]) == 0
+    assert (env["proj"] / "josh.md").read_text(encoding="utf-8") == \
+        "# What does Josh think?\n\n[populate from agentic research]\n"
+    capsys.readouterr()
+    assert T.cmd_locate([link]) == 0
+    assert "mapped   proj/josh.md" in capsys.readouterr().out
+    # the placeholder was pulled, so replacing it is an ordinary push — no --force
+    (env["proj"] / "josh.md").write_text("# What does Josh think?\n\nFilled.\n", encoding="utf-8")
+    res, _ = run(env, "push")
+    assert res == {"josh.md": "pushed"}
+    assert fake.texts(hub)[:3] == [("heading_1", "What does Josh think?"), ("paragraph", "Filled."),
+                                   ("heading_1", "What does Nous have?")]
