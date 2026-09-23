@@ -16,6 +16,9 @@ local path (relative to that folder) to ONE Notion target:
       - path: notes/muse.md
         page: new                                    # a new child page, created on first push
         in: thesis.md                                # container: another entry, a URL, or the hub
+      - path: research                               # a FOLDER of notes: each .md becomes its
+        pages: new                                   # own child page of a folder page (new or
+        title: Research notes                        # a URL); new files publish on next push
       - path: log                                    # a FOLDER of .md files ...
         database: new                                # ... = a database: one row per file,
         title: Public log                            #     front-matter -> properties, body -> page
@@ -48,7 +51,8 @@ unchanged Notion blocks — with their comments — are untouched, and blocks Ma
 Verbs (under `bizconnect notion`)
 -----
   link    <dir> <hub-url>                    create <dir>/notion.yaml bound to a hub page
-  map     <path> --section H | --page URL|new | --database [URL|new]  [--in X] [--title T]
+  map     <path> --section H | --page URL|new | --pages [URL|new] | --database [URL|new]
+                                             [--in X] [--title T]
                                              add a mapping entry (path relative to cwd)
   outline <page|url|dir>                     a page's headings / child pages / databases, with ids
   status  [path] [--deep]                    per-item verdicts
@@ -510,6 +514,20 @@ class Tree:
                     for f in sorted(folder.glob("*.md"), key=lambda x: x.name.lower()):
                         if f.name not in INDEX_NAMES:
                             self._add(path + "/" + f.name, "row", f, e)
+            elif "pages" in e:                              # a folder of notes: one page each
+                folder = self.dir / path
+                idx = next((folder / n for n in INDEX_NAMES if (folder / n).is_file()), None)
+                self._add(path + "/", "page", idx, e)
+                self.items[path + "/"].update(container=True, fr=path + "/" + (idx.name if idx else "README.md"))
+                if folder.is_dir():
+                    for f in sorted(folder.glob("*.md"), key=lambda x: x.name.lower()):
+                        if f.name not in INDEX_NAMES:
+                            self._add(path + "/" + f.name, "page", f, e)
+                            self.items[path + "/" + f.name]["note_of"] = path + "/"
+                for rel in (e.get("ids") or {}):
+                    if str(rel) not in self.items:
+                        self._add(str(rel), "page", None, e)
+                        self.items[str(rel)]["note_of"] = path + "/"
             elif re.search(r"[*?\[]", path):
                 for f in sorted(_glob.glob(str(self.dir / path), recursive=True)):
                     fp = Path(f)
@@ -554,24 +572,36 @@ class Tree:
         e = it["entry"]
         if it["kind"] == "row":
             return self.row_ids.get(it["key"])
-        if it["kind"] == "file":
-            return (e.get("ids") or {}).get(it["key"])
+        if it["kind"] == "file" or it.get("note_of"):
+            v = (e.get("ids") or {}).get(it["key"])
+            return N.norm_id(str(v)) if v else None
         if e.get("id"):
             return N.norm_id(str(e["id"]))
-        sel = e.get("page") if it["kind"] == "page" else e.get("database") if it["kind"] == "db" else None
+        sel = (e.get("pages") if it.get("container") else e.get("page")) if it["kind"] == "page" \
+            else e.get("database") if it["kind"] == "db" else None
         if sel and str(sel).strip().lower() != "new":
             return N.norm_id(str(sel))
         return None
 
     def set_id(self, it, nid):
         if not nid.startswith("dry:"):
-            it["entry"]["id"] = nid
+            if it.get("note_of"):
+                ids = it["entry"].get("ids")
+                if ids is None:
+                    from ruamel.yaml.comments import CommentedMap
+                    ids = CommentedMap()
+                    it["entry"]["ids"] = ids
+                ids[it["key"]] = nid
+            else:
+                it["entry"]["id"] = nid
         it["_id"] = nid
 
     def _id(self, it):
         return it.get("_id") or self.item_id(it)
 
     def container_id(self, it):
+        if it.get("note_of"):
+            return self._id(self.items[it["note_of"]])
         ref = it["entry"].get("in")
         if not ref:
             return self.hub
@@ -660,9 +690,8 @@ class Tree:
                 u = self._target_url(cand)
                 if u:
                     return u
-        if self.link_base:
-            if not t.startswith(".."):
-                return self.link_base.rstrip("/") + "/" + urllib.parse.quote(t)
+        if self.link_base:                   # e.g. a GitHub blob URL of this folder; `..` climbs it
+            return urllib.parse.urljoin(self.link_base.rstrip("/") + "/", urllib.parse.quote(t))
         return None
 
     def _key_by_url(self):
@@ -810,9 +839,19 @@ class Tree:
         return out
 
     # ------------------------------------------------------------- page/section views
+    @staticmethod
+    def fr(it):
+        """The file an item's links are relative to (a folder page's is its README)."""
+        return it.get("fr") or it["key"]
+
+    @staticmethod
+    def body_less(it):
+        """A folder page with no README: it exists in Notion, but has no body to sync."""
+        return bool(it.get("container")) and not (it.get("path") and it["path"].is_file())
+
     def doc_view(self, it):
         """Everything push/pull/status need to judge one page or section item."""
-        k, fr = it["key"], it["key"]
+        fr = self.fr(it)
         ld = self.local_doc(it)
         v = {"it": it, "local": ld, "remote_exists": False, "remote_canon": None, "blocks": None,
              "pid": None, "heading": None, "level": 0}
@@ -883,7 +922,7 @@ class Tree:
             if it["kind"] == "db" and self._db_in_scope(it, scope):
                 self._push_collection(it, scope)
         for it in list(self.items.values()):
-            if it["kind"] in ("page", "section") and self.in_scope(it["key"], scope):
+            if it["kind"] in ("page", "section") and self.in_scope(it["key"], scope) and not self.body_less(it):
                 self._push_doc(it)
         for it in list(self.items.values()):
             if it["kind"] == "file" and self.in_scope(it["key"], scope):
@@ -909,7 +948,8 @@ class Tree:
                     continue
                 pending.remove(it)
                 progress = True
-                if it["kind"] == "page" and not (it.get("path") and it["path"].is_file()):
+                if it["kind"] == "page" and not it.get("container") and \
+                        not (it.get("path") and it["path"].is_file()):
                     self.note("skipped", it["key"], "no local file yet — nothing to create")
                     continue
                 title = self._title_for(it)
@@ -946,19 +986,21 @@ class Tree:
         if not scope:
             return False
         for other in self.items.values():
-            if self.in_scope(other["key"], scope) and str(other["entry"].get("in") or "").strip("/") == it["key"]:
+            if self.in_scope(other["key"], scope) and (
+                    other.get("note_of") == it["key"]
+                    or str(other["entry"].get("in") or "").strip("/") == it["key"].strip("/")):
                 return True
         return False
 
     def _title_for(self, it):
         e = it["entry"]
-        if e.get("title"):
+        if e.get("title") and not it.get("note_of"):
             return str(e["title"])
         if it["kind"] == "page":
             ld = self.local_doc(it)
             if ld["title"]:
                 return ld["title"]
-            return prettify(Path(it["key"]).stem)
+            return prettify(Path(it["key"].rstrip("/")).stem)
         idx = next((it["path"] / n for n in INDEX_NAMES if it.get("path") and (it["path"] / n).is_file()), None)
         if idx:
             t, _ = M.split_title(M.split_front_matter(idx.read_text(encoding="utf-8"))[1])
@@ -999,8 +1041,16 @@ class Tree:
             else:
                 self.note("error", k, "target page not found — is it shared with the integration?")
             return
+        if vd == "local-deleted" and it.get("note_of") and self.prune:
+            if not self.dry:
+                st, r = N.api("PATCH", "/pages/%s" % v["pid"], body={"archived": True})
+                _die(st, r, "archive page %s" % k)
+                del it["entry"]["ids"][k]
+                self.state.pop(k, None)
+            self.note("archived", k, "local file deleted")
+            return
         if vd in ("new-remote", "local-deleted"):
-            self.note(vd, k, "no local file — pull to fetch it")
+            self.note(vd, k, "no local file — pull to fetch it" + (" (push --prune archives it)" if it.get("note_of") else ""))
             return
         if vd == "remote-deleted":
             self.note(vd, k, "gone from Notion (fix the mapping, or push --force after clearing its id)")
@@ -1016,11 +1066,11 @@ class Tree:
             st, r = N.api("PATCH", "/pages/%s" % pid, body={"properties": {"title": {"title": _rich(ld["title"])}}})
             _die(st, r, "set title %s" % k)
         start = v["heading"]["id"] if it["kind"] == "section" else None
-        self.apply_body(pid, v["blocks"] or [], v["local_blocks"], k, it, start_after=start,
+        self.apply_body(pid, v["blocks"] or [], v["local_blocks"], self.fr(it), it, start_after=start,
                         exclude=self._attached_ids(pid))
         self.invalidate(pid)
         v2 = self.doc_view(it)
-        self._learn_media(it, v2["blocks"] or [], v2["local_blocks"], k)
+        self._learn_media(it, v2["blocks"] or [], v2["local_blocks"], self.fr(it))
         v2 = self.doc_view(it)
         if v2["remote_canon"] != v2["local_canon"]:
             self.out("  ! %s: Notion normalised the content differently than expected" % k)
@@ -1449,8 +1499,11 @@ class Tree:
     # ================================================================ PULL
     def pull(self, scope=None):
         for it in list(self.items.values()):
-            if it["kind"] in ("page", "section") and self.in_scope(it["key"], scope):
+            if it["kind"] in ("page", "section") and self.in_scope(it["key"], scope) and not self.body_less(it):
                 self._pull_doc(it)
+        for it in list(self.items.values()):
+            if it.get("container") and self._db_in_scope(it, scope):
+                self._pull_new_notes(it)
         for it in list(self.items.values()):
             if it["kind"] == "db" and self._db_in_scope(it, scope):
                 self._pull_collection(it, scope)
@@ -1463,7 +1516,7 @@ class Tree:
         return _sha(data)
 
     def _doc_text(self, it, v):
-        ld, fr = v["local"], it["key"]
+        ld, fr = v["local"], self.fr(it)
         head = ("---\n" + ld["fm"] + "---\n\n") if ld.get("fm") is not None else ""
         if it["kind"] == "section":
             title = M.plain(v["heading"][v["heading"]["type"]].get("rich_text"))
@@ -1507,12 +1560,43 @@ class Tree:
         if self.dry:
             self.note("would-pull", k, vd)
             return
-        self._download_images(it, v["blocks"], k)
+        self._download_images(it, v["blocks"], self.fr(it))
         text = self._doc_text(it, v)
+        if it.get("path") is None:                      # a note deleted locally: restore it
+            it["path"] = self.dir / k
         sha = self._write(it["path"], text)
         v2 = self.doc_view(it)
         self.record(k, local_sha=sha, remote_sha=_sha(v2["remote_canon"] or ""))
         self.note("pulled", k, vd)
+
+    def _pull_new_notes(self, it):
+        """Pages people add under a folder page in Notion arrive as new local files."""
+        pid = self._id(it)
+        if not pid or pid.startswith("dry:") or not _alive(get_page(pid)):
+            return
+        folder = it["key"]
+        mapped = {self._id(x) for x in self.items.values()}
+        for b in self.page_blocks(pid):
+            if b.get("type") != "child_page" or b["id"] in mapped:
+                continue
+            title = b["child_page"].get("title") or "untitled"
+            stem, n = file_slug(title), 1
+            key = folder + stem + ".md"
+            while key in self.items or (self.dir / key).exists():
+                n += 1
+                key = folder + "%s-%d.md" % (stem, n)
+            if self.dry:
+                self.note("would-pull", key, "new-remote page %r" % title)
+                continue
+            new = {"key": key, "kind": "page", "path": self.dir / key, "entry": it["entry"], "note_of": folder}
+            self.items[key] = new
+            self.set_id(new, b["id"])
+            v = self.doc_view(new)
+            self._download_images(new, v["blocks"], key)
+            sha = self._write(new["path"], self._doc_text(new, v))
+            v2 = self.doc_view(new)
+            self.record(key, local_sha=sha, remote_sha=_sha(v2["remote_canon"] or ""))
+            self.note("pulled", key, "new-remote page %r" % title)
 
     def _pull_collection(self, it, scope):
         k = it["key"]
@@ -1599,6 +1683,8 @@ class Tree:
             if not self.in_scope(it["key"], scope):
                 continue
             if it["kind"] in ("page", "section"):
+                if self.body_less(it):
+                    continue
                 vd = self.judge(self.doc_view(it))
                 if vd:
                     self.note(vd, it["key"])
@@ -1758,6 +1844,8 @@ MANIFEST_HEADER = """\
 # Each `map` entry ties a local path (relative to this folder) to ONE target:
 #   page: <url> | new       the file is that whole page (title = its first `# H1`)
 #   section: <heading>      the file is the part of the page under that heading
+#   pages: new | <url>      (a folder) each .md is its own child page of that page;
+#                           new files are published on the next push
 #   database: new | <url>   (a folder) each .md is a row: front-matter -> properties
 # `in:` picks the container (another entry's path, a URL; default: the hub).
 # `id` (and `ids` / `media`) are filled in by the tool — they keep the mapping pinned
@@ -1798,7 +1886,7 @@ def cmd_map(argv):
     def opt(name):
         v = argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else None
         return v.strip() if isinstance(v, str) else v
-    flags = {"--section", "--page", "--database", "--in", "--title", "--level"}
+    flags = {"--section", "--page", "--pages", "--database", "--in", "--title", "--level"}
     pos, skip = [], set()
     for i, a in enumerate(argv):
         if a in flags:
@@ -1831,8 +1919,11 @@ def cmd_map(argv):
     elif "--database" in argv:
         v = opt("--database")
         e["database"] = v if v and not v.startswith("--") else "new"
+    elif "--pages" in argv:
+        v = opt("--pages")
+        e["pages"] = v if v and not v.startswith("--") else "new"
     else:
-        sys.exit("say what it maps to: --section H | --page URL|new | --database [URL|new]")
+        sys.exit("say what it maps to: --section H | --page URL|new | --pages [URL|new] | --database [URL|new]")
     for f, key in (("--in", "in"), ("--title", "title"), ("--level", "level")):
         if opt(f):
             e[key] = int(opt(f)) if key == "level" else opt(f)

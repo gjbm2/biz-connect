@@ -336,16 +336,32 @@ def render_inline(rich, href=None):
         run = [(c, {k for k, v in a.items() if v}) for c, _l, a in segs[i:j]]
         before = segs[i - 1][0][-1:] if i else ""
         after = segs[j][0][:1] if j < len(segs) else ""
-        body = _render_run(run, before, after)
+        body = _render_run(run, before, after, star=True)       # `*italic*`, as people write it ...
+        if [(c, a) for c, _l, a in (_seg_parts(r) for r in parse_inline(body))] != \
+                [(c, tuple(k in s for k in ANN_KEYS)) for c, s in _merged_run(run)]:
+            body = _render_run(run, before, after)              # ... unless that would be ambiguous
         out.append("[%s](%s)" % (body, link.replace(" ", "%20").replace(")", "%29")) if link else body)
         i = j
     return "".join(out)
 
 
-def _render_run(segs, before="", after=""):
+def _merged_run(run):
+    out = []
+    for c, s in run:
+        if not c:
+            continue
+        if out and out[-1][1] == s:
+            out[-1] = (out[-1][0] + c, s)
+        else:
+            out.append((c, s))
+    return out
+
+
+def _render_run(segs, before="", after="", star=False):
     """Render styled segments, wrapping each MAXIMAL run that shares a style once (outermost
     first), so adjacent same-style segments never emit colliding markers like `*a**b*`.
-    Italic uses `_` (unambiguous next to `**`) unless the run sits inside a word."""
+    Italic uses `_` (unambiguous next to `**`) unless the run sits inside a word; with
+    `star`, it uses `*` (the caller re-parses to check that stayed unambiguous)."""
     out, i, n = [], 0, len(segs)
     while i < n:
         c, a = segs[i]
@@ -357,9 +373,9 @@ def _render_run(segs, before="", after=""):
                 j += 1
             prev = segs[i - 1][0][-1:] if i else before
             nxt = segs[j][0][:1] if j < n else after
-            inner = _render_run([(cc, aa - {key}) for cc, aa in segs[i:j]], prev, nxt)
+            inner = _render_run([(cc, aa - {key}) for cc, aa in segs[i:j]], prev, nxt, star)
             if marker is None:
-                marker = "*" if (prev.isalnum() or nxt.isalnum()) else "_"
+                marker = "*" if (star or prev.isalnum() or nxt.isalnum()) else "_"
             out.append(_wrap(inner, marker))
             i = j
             break

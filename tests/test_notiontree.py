@@ -365,3 +365,65 @@ def test_whole_page_and_its_sections_cannot_both_be_mapped(env, capsys):
     """ % env["hub"])
     assert T._run("status", [str(env["proj"])]) == 1
     assert "map the page whole OR by sections" in capsys.readouterr().out
+
+
+def test_link_base_covers_links_out_of_the_folder(env):
+    (env["proj"] / "notion.yaml").write_text(
+        "hub: %s\nlink_base: https://github.com/o/r/blob/main/proj/\nmap:\n  - path: josh.md\n    section: What does Josh think?\n"
+        % env["hub"], encoding="utf-8")
+    t = tree(env)
+    assert t.resolve("../CLAUDE.md", "josh.md") == "https://github.com/o/r/blob/main/CLAUDE.md"
+    assert t.resolve("context/a b.pdf", "josh.md") == "https://github.com/o/r/blob/main/proj/context/a%20b.pdf"
+    assert t.unresolve("https://github.com/o/r/blob/main/proj/context/a%20b.pdf", "josh.md") == "context/a b.pdf"
+    assert t.resolve("#anchor", "josh.md") is None
+
+
+def test_folder_of_pages(env):
+    manifest(env, """\
+        map:
+          - path: research
+            pages: new
+            title: Competitor research
+    """)
+    d = env["proj"] / "research"
+    d.mkdir()
+    (d / "muse.md").write_text("# Muse: evidence\n\n*Private, a label:* \"verbatim … quote\"\n", encoding="utf-8")
+    (d / "instinct.md").write_text("# Instinct\n\nNotes. See [Muse](muse.md).\n", encoding="utf-8")
+    res, _ = run(env, "push")
+    assert res == {"research/": "created", "research/muse.md": "pushed", "research/instinct.md": "pushed"}
+    fake = env["fake"]
+    cont = [b for b in fake.ids_of(env["hub"]) if fake.blocks[b]["type"] == "child_page"
+            and fake.texts(env["hub"])[fake.ids_of(env["hub"]).index(b)][1] == "Competitor research"][0]
+    assert [t for t in fake.texts(cont)] == [("child_page", "Instinct"), ("child_page", "Muse: evidence")]
+    assert run(env, "status")[0] == {}
+    # an agent drops a new note in the folder: the next push publishes it, no mapping step
+    (d / "chatgpt.md").write_text("# ChatGPT\n\nCompared.\n", encoding="utf-8")
+    assert run(env, "push")[0] == {"research/chatgpt.md": "pushed"}
+    # a page added in Notion under the folder page arrives as a file
+    fake.new_page("Typed in Notion", parent=cont, blocks=[P("hello")])
+    assert run(env, "pull")[0] == {"research/typed-in-notion.md": "pulled"}
+    assert (d / "typed-in-notion.md").read_text(encoding="utf-8") == "# Typed in Notion\n\nhello\n"
+    # the italic label and the verbatim quote round-trip unchanged
+    muse_id = [x for x in fake.ids_of(cont) if fake.texts(cont)[fake.ids_of(cont).index(x)][1] == "Muse: evidence"][0]
+    fake.blocks[fake.ids_of(muse_id)[0]]["paragraph"]["rich_text"].append(
+        {"type": "text", "text": {"content": " (checked)"}, "plain_text": " (checked)", "annotations": {}, "href": None})
+    fake._touch(fake.ids_of(muse_id)[0])
+    run(env, "pull")
+    assert (d / "muse.md").read_text(encoding="utf-8") == \
+        "# Muse: evidence\n\n*Private, a label:* \"verbatim … quote\" (checked)\n"
+    # a note deleted locally stays in Notion unless pruned
+    (d / "instinct.md").unlink()
+    assert run(env, "push")[0] == {"research/instinct.md": "local-deleted"}
+    assert run(env, "push", prune=True)[0] == {"research/instinct.md": "archived"}
+    assert ("child_page", "Instinct") not in fake.texts(cont)
+    assert "instinct.md" not in (env["proj"] / "notion.yaml").read_text(encoding="utf-8")
+    assert run(env, "status")[0] == {}
+
+
+def test_scoped_push_of_one_note_creates_its_folder_page(env):
+    manifest(env, "map:\n  - path: research\n    pages: new\n")
+    (env["proj"] / "research").mkdir()
+    (env["proj"] / "research" / "a.md").write_text("# A\n\nx\n", encoding="utf-8")
+    (env["proj"] / "research" / "b.md").write_text("# B\n\ny\n", encoding="utf-8")
+    res, _ = run(env, "push", scope="research/a.md")
+    assert res == {"research/": "created", "research/a.md": "pushed"}

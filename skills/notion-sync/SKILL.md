@@ -27,6 +27,9 @@ map:
   - path: research/muse.md
     page: new                                    # created as a child page on first push
     in: thesis.md                                # container: another page entry, a URL, or the hub
+  - path: research                               # folder of NOTES: each .md is its own page
+    pages: new                                   # under a folder page (new, or a URL); a new
+    title: Research notes                        # file is published on the next push
   - path: log                                    # folder: each .md is a DATABASE ROW
     database: new
     title: Public log
@@ -47,6 +50,9 @@ map:
   on first use.
 - Pages and databases created by the API land at the **end** of their container. Tell the user
   they can drag them into place in Notion (ids keep the mapping intact).
+- **Folders of notes** (`pages:`) are the easy path for research: an agent writes a new `.md`
+  into the folder, and the next `push` publishes it as a page. Pages people add under the
+  folder page in Notion are pulled as new files. `push --prune` archives notes deleted locally.
 - Images pulled from Notion are downloaded to `media/<file-stem>/` next to the file.
 
 ## How to run
@@ -58,6 +64,7 @@ $B outline projects/x                                            # the hub's hea
 $B map     projects/x/thesis.md --section "What we think"        # add entries (or edit notion.yaml)
 $B map     projects/x/hub/insights.md --page <url>
 $B map     projects/x/notes/a.md --page new [--in thesis.md]
+$B map     projects/x/research --pages new --title "Research notes"
 $B map     projects/x/log --database new --title "Log"
 $B status  projects/x [--deep]                                   # verdict per item (no writes)
 $B pull    projects/x [--dry-run] [--force]                      # Notion -> files
