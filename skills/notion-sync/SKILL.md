@@ -1,6 +1,6 @@
 ---
 name: notion-sync
-description: Keep a project folder's Markdown files and a Notion hub in two-way sync through a mapping file (notion.yaml) — each file mapped to a whole Notion page, to the SECTION of a page under a heading, or (a folder of front-matter files) to a Notion database. Use when the user wants project notes/state/research "in Notion", to publish local Markdown into sections of an existing hand-built Notion page, to pull people's Notion edits back into the repo, to add or change a mapping, or to check what's out of sync. Guarded both ways; never touches unmapped Notion content.
+description: Keep a project folder's Markdown files and a Notion hub in two-way sync through a mapping file (notion.yaml) — each file mapped to a whole Notion page, to the SECTION of a page under a heading, or (a folder of front-matter files) to a Notion database. Use when the user wants project notes/state/research "in Notion", to publish local Markdown into sections of an existing hand-built Notion page, to pull people's Notion edits back into the repo, to add or change a mapping, to fill in a placeholder the user links to (a URL ending in #<block-id> means fill in THAT ONE BLOCK only), or to check what's out of sync. Guarded both ways; never touches unmapped Notion content.
 allowed-tools: Bash(python *), Read, Edit, Write
 ---
 
@@ -94,6 +94,32 @@ both sides), `new-local`, `new-remote`, `local-deleted`, `remote-deleted`, and `
    Notion changes into the file by hand (or ask the user), then `push --force` that one path.
 5. `--prune` archives database rows whose files were deleted locally. It's off by default.
 6. Row verdicts use a cheap timestamp check. Use `status --deep` to re-read every row body.
+
+## A link to ONE block = fill in that one block, nothing else
+
+A Notion URL ending in `#<32 hex chars>` (e.g. `…/Project-X-3e4e…?source=copy_link#3e4e4fd0…0823`)
+points at **a single block**, usually a placeholder like "[to follow]". When the user shares a
+link like that ("fill this in", "fill in sensibly"), the scope is **that one block**. Leave the
+rest of its section alone, don't fill the page's other placeholders, and don't restructure
+anything. Any context they give ("given project X as context") is what to write *from*. It
+doesn't widen what you write *to*.
+
+1. **Resolve it first.** The fragment is the block id. Find the block and the heading above it:
+   `outline` lists headings with their ids, and the block's position among the page's children
+   shows which section holds it. Say which block it is (its current text and its heading)
+   before you write anything.
+2. **Write one block's worth.** The replacement is a single block, normally one paragraph (links
+   and bold are fine). Don't turn it into a heading plus a bulleted list.
+3. **Push through the mapping, scoped to one path:**
+   - If the block is the **only** block under its heading, map that section to a file (`map
+     <file> --section "<heading>"`), write the one paragraph under the file's `# H1`, and run
+     `push <file> --force`. That's allowed because it's a placeholder, but say so.
+   - If the section has **other blocks**, map it and `pull` it first. Then edit only that
+     block's text in the file and `push <file>`. Unchanged blocks are left alone, so only the
+     target is rewritten.
+4. **Check the result:** the section now holds the one filled block, and the page's other blocks
+   are untouched. Report any unrelated changes you see (e.g. a person editing at the same
+   time) rather than "fixing" them.
 
 ## What round-trips
 
