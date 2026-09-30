@@ -256,6 +256,7 @@ def test_outline_summarises_geometry_text_styles_and_notes():
     assert t["rows"][0]["fills"] == "#FDE6BC" and t["rows"][0]["align"] == "CENTER"
     assert "Arial 11pt bold italic #000000" in t["rows"][1]["style"]
     assert t["borders"] == ["#9E9E9E 1.5pt SOLID x1"]
+    assert t["columns"][1] == {"style": ["Arial 11pt bold italic #000000"], "align": "START,vTOP", "fills": ["none"]}
     assert els["rule1"]["geom"] == "x0.5 y4.7 w9 h0"                 # omitted scaleY is 0, not 1
     assert els["rule1"]["outline"] == "theme:ACCENT1(#FF8000) 1pt"
     assert els["grp1"]["type"] == "GROUP (2)" and els["grp1"]["geom"] == "x1 y1 w3 h2"
@@ -556,6 +557,12 @@ def test_apply_rejects_malformed_requests(fake, tmp_path, capsys):
     f = tmp_path / "r.json"
     f.write_text(json.dumps([{"a": 1, "b": 2}]), encoding="utf-8")
     assert run_cli("apply", "DECK123", str(f)) == 2 and fake.batches == []
+
+
+def test_missing_input_file_is_a_clean_error(fake, capsys):
+    assert run_cli("apply", "DECK123", "no-such-file.json") == 2
+    assert run_cli("build", "DECK123", "no-such-spec.yaml") == 2
+    assert "file not found" in capsys.readouterr().err and fake.batches == []
 
 
 def test_replace_reports_occurrences(fake, capsys):

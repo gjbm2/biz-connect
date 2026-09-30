@@ -406,6 +406,8 @@ def summarize_element(el, scheme, index, full=False, parent=IDENTITY):
                 row["style"] = [style_tag(k) for k, _n in (ranked if full else ranked[:2])]
             rows.append(row)
         d["rows"] = rows
+        if len(t.get("tableRows", [])) > 1:
+            d["columns"] = _column_summary(t, scheme, full)
         borders = {}
         for grp in ("horizontalBorderRows", "verticalBorderRows"):
             for br in t.get(grp, []):
@@ -443,6 +445,32 @@ def summarize_element(el, scheme, index, full=False, parent=IDENTITY):
     if el.get("title") or el.get("description"):
         d["alt"] = _clip(el.get("title") or el.get("description"), 60)
     return d
+
+
+def _column_summary(t, scheme, full=False):
+    """Per column, over the body rows (all but the first): the styles, alignment and fills used."""
+    cols = []
+    for c in range(t.get("columns", 0)):
+        styles, aligns, fills = {}, set(), {}
+        for r in t.get("tableRows", [])[1:]:
+            cells = r.get("tableCells", [])
+            if c >= len(cells):
+                continue
+            cell = cells[c]
+            if not text_of(cell.get("text")).strip():
+                continue
+            for k, n in text_styles(cell.get("text"), scheme):
+                styles[k] = styles.get(k, 0) + n
+            aligns |= set(_alignments(cell.get("text")))
+            cp = cell.get("tableCellProperties") or {}
+            aligns.add("v" + cp.get("contentAlignment", "TOP"))
+            f = _fill_str(cp.get("tableCellBackgroundFill"), scheme) or "none"
+            fills[f] = fills.get(f, 0) + 1
+        ranked = sorted(styles.items(), key=lambda kv: -kv[1])
+        cols.append({"style": [style_tag(k) for k, _n in (ranked if full else ranked[:2])],
+                     "align": ",".join(sorted(aligns)),
+                     "fills": [f for f, _n in sorted(fills.items(), key=lambda kv: -kv[1])]})
+    return cols
 
 
 TITLE_TYPES = ("TITLE", "CENTERED_TITLE")
@@ -550,6 +578,9 @@ def _render_el(e, indent):
                 extra.append("style=" + "; ".join(row["style"]))
             lines.append(f"{pad}    r{r}: " + " | ".join(f'"{c}"' for c in row["cells"])
                          + (("   [" + "  ".join(extra) + "]") if extra else ""))
+        for c, col in enumerate(e.get("columns", [])):
+            lines.append(f"{pad}    body c{c}: " + "; ".join(col["style"]) + f"  align={col['align']}"
+                         + f"  fill={'/'.join(col['fills'])}")
         if e.get("borders"):
             lines.append(f"{pad}    borders: " + "; ".join(e["borders"]))
     if e.get("alt"):
@@ -1109,9 +1140,17 @@ def _element_props(page_id, x, y, w, h):
                           "translateX": emu(x), "translateY": emu(y), "unit": "EMU"}}
 
 
-def load_spec(path):
+def _read_input(path):
+    if str(path) == "-":
+        return sys.stdin.read()
     p = Path(path)
-    raw = sys.stdin.read() if str(path) == "-" else p.read_text(encoding="utf-8-sig")
+    if not p.is_file():
+        raise SpecError(f"file not found: {path}")
+    return p.read_text(encoding="utf-8-sig")
+
+
+def load_spec(path):
+    raw = _read_input(path)
     if str(path).lower().endswith(".json") or raw.lstrip().startswith("{"):
         try:
             return json.loads(raw)
@@ -1627,7 +1666,7 @@ def cmd_pdf(args):
 
 
 def load_requests(path):
-    raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8-sig")
+    raw = _read_input(path)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
@@ -1736,7 +1775,7 @@ def cmd_notes(args):
     if opt(args, "--text") is not None:
         text = opt(args, "--text")
     elif opt(args, "--file"):
-        text = Path(opt(args, "--file")).read_text(encoding="utf-8-sig")
+        text = _read_input(opt(args, "--file"))
     elif flag(args, "--clear"):
         text = ""
     else:

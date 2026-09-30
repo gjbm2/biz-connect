@@ -52,6 +52,9 @@ id to authorise).
 
 1. `outline` the slides around where you'll work, with `--full` to see every style. Note the
    fonts, sizes, colours, fills, margins and table geometry: that is the deck's visual language.
+   Styles read `font size [bold] [italic] colour`, most-used first. Tables show each row (cells,
+   fills, alignment) and a `body cN` line per column over the body rows; `vMIDDLE` etc. is the
+   cells' vertical alignment.
 2. Write a spec (below). `build --dry-run` first; read the warnings (overflow, off-slide).
 3. `build` it, then `thumb` the slide and **look at the PNG** before saying it's done. Fix the
    spec and re-run `build`: a build replaces what the same spec built before, in place.
