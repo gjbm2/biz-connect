@@ -1,7 +1,7 @@
 # biz-connect — install / enable / use (for agents and humans)
 
 **This repository *is* a Claude Code plugin.** It connects any repo to Google
-Drive/Docs, Notion, Google Sheets, and a standardised git flow. If you are an agent
+Drive/Docs, Notion, Google Sheets, Google Slides, and a standardised git flow. If you are an agent
 that just opened this repo and the user wants its tooling, here is exactly what to do.
 
 ## 1. Enable the plugin (once per machine)
@@ -16,7 +16,7 @@ In the Claude Code REPL:
 (For local development on a clone, use the path instead: `/plugin marketplace add .`)
 
 This makes the plugin's skills available in **every** project after the next session start:
-`gdoc-sync`, `notion-sync`, `notion-notes`, `sheet-io`, `workbook-diff`, `git-flow`, `doc-pipeline`,
+`gdoc-sync`, `notion-sync`, `notion-notes`, `sheet-io`, `slides-edit`, `workbook-diff`, `git-flow`, `doc-pipeline`,
 `feedback-ingest`, `register`, `new-submission`, `biz-connect-setup`. Skills (and the
 `bizconnect` command) load only at session start, so start a new session after installing or
 updating.
@@ -46,7 +46,7 @@ bizconnect init      # creates ~/.config/biz-connect/secrets.env
 #   Notion: put NOTION_TOKEN=... in that file (an internal integration from
 #           https://www.notion.so/profile/integrations with Read, Update and Insert content;
 #           share the hub page with it via ••• → Connections)
-#   Google (only for gdoc/sheet): drop your service-account.json into ~/.config/biz-connect/
+#   Google (only for gdoc/sheet/slides): drop your service-account.json into ~/.config/biz-connect/
 #           (or point GOOGLE_SERVICE_ACCOUNT_FILE at it)
 bizconnect doctor    # reports each part; a missing service account only matters for Google
 bizconnect notion whoami   # verifies the Notion token
@@ -73,6 +73,7 @@ bizconnect notion  link|map|outline|locate|diff <args>      # set up / inspect a
 bizconnect notion  status|pull|push [<folder or file>]      # two-way file <-> Notion sync
 bizconnect notion  whoami|check|read|upload|fill <page|.>   # . = this repo's notion.notes_page
 bizconnect sheet   read|write|append <sheet-url>            # service-account Sheets r/w
+bizconnect slides  outline|thumb|pdf|build|apply|hide|move|insert|notes <deck>   # Google Slides (slides-edit skill)
 bizconnect xlsx    diff OLD.xlsx NEW.xlsx                   # structural workbook diff
 bizconnect git     save|sync|pr                             # safe, standardised git flow
 bizconnect compose status|run|accept|graph                  # doc-composition pipeline (needs pipeline.yaml); `run inputs` syncs sources

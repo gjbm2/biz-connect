@@ -1,7 +1,7 @@
 # biz-connect
 
 Business-service connectors for Claude Code, shareable across projects and users.
-Connect any repo to **Google Drive/Docs**, **Notion**, **Google Sheets**, and a
+Connect any repo to **Google Drive/Docs**, **Notion**, **Google Sheets**, **Google Slides**, and a
 standardised **git** flow — with per-repo bindings and a single per-user credential
 store. Packaged as a Claude Code **plugin** (skills + CLI).
 
@@ -39,7 +39,7 @@ scripts\install.ps1     # Windows
 (For local development on a clone, install from a path: `/plugin marketplace add C:/path/to/biz-connect`.)
 
 After the next session start, these skills are available in **every** project:
-`gdoc-sync`, `notion-sync`, `notion-notes`, `sheet-io`, `workbook-diff`, `git-flow`, `doc-pipeline`,
+`gdoc-sync`, `notion-sync`, `notion-notes`, `sheet-io`, `slides-edit`, `workbook-diff`, `git-flow`, `doc-pipeline`,
 `feedback-ingest`, `register`, `new-submission`, `biz-connect-setup`.
 
 > **Restart Claude Code (start a new session) before running steps 2–3.** Skills and the
@@ -93,7 +93,7 @@ bizconnect doctor    # reports each part of the setup
 Everything under `bizconnect notion` needs only that token plus page sharing: the sync verbs
 (`link map outline locate diff status push pull`) and `whoami check read upload fill sync`.
 
-**Google** (only for the Google connectors: `gdoc`, `sheet`, Doc inputs to `compose`): drop
+**Google** (only for the Google connectors: `gdoc`, `sheet`, `slides`, Doc inputs to `compose`): drop
 your `service-account.json` into `~/.config/biz-connect/` (or set `GOOGLE_SERVICE_ACCOUNT_FILE`),
 and share each Doc/Sheet/folder with the service-account email that `doctor` prints. If you
 only use Notion, a missing service account is expected.
@@ -217,7 +217,8 @@ The plugin is shared; **your credentials and access grants are not**. Each user 
 | Notion sync: `missing` | The section heading wasn't found (typo, inside a column or toggle, renamed or deleted); the message names the nearest headings | Fix `section:` in `notion.yaml`, or run `bizconnect notion outline <folder>`; add `create: true` only for a genuinely new heading |
 | `unknown notion verb` / `needs one of page / section / database` | Plugin older than 0.13 | `/plugin marketplace update biz-connect`, `/plugin update biz-connect`, then a new session |
 | Notion MCP tools missing | The MCP isn't connected; biz-connect doesn't need it | Only if you want ad-hoc search/editing: `claude mcp add --transport http notion https://mcp.notion.com/mcp`, then `/mcp` |
-| Impersonation 403 / `unauthorized_client` | SA client id not authorised for the scopes | In Workspace Admin → Domain-wide delegation, authorise the SA client id for the `drive` and `documents` scopes |
+| Impersonation 403 / `unauthorized_client` | SA client id not authorised for the scopes | In Workspace Admin → Domain-wide delegation, authorise the SA client id for the `drive` and `documents` scopes (`slides` needs only `drive`) |
+| `slides` write: `REVISION MISMATCH` (exit 3) | Someone edited the deck between the read and the write; nothing was written | `bizconnect slides outline <deck>` again, check the plan still fits, re-run. Never force it |
 | `update` says you're behind right after a release | freshness check is cached (24h), version-driven by `plugin.json` on `main` | `bizconnect update` (forces a check), then `/plugin update biz-connect`; silence with `BIZCONNECT_UPDATE_CHECK=off` |
 
 ### Team note
@@ -288,6 +289,7 @@ Maintainers: releasing, the roadmap and internal notes are in
 | `gdoc` | `push pull status link unlink list comments diff resolve docx` | local Markdown ↔ Google Doc; `comments`/`diff`/`resolve` capture review feedback |
 | `notion` | `link map outline locate diff status push pull` · `whoami check read upload fill sync` | two-way sync of project Markdown with Notion via a per-folder `notion.yaml` (file ↔ page / section under a heading; `pages:` folder of notes ↔ child pages; `database:` folder of front-matter files ↔ database rows), guarded both ways; plus media upload, headless read, access check and a one-way page-tree mirror (`sync`). Token only, no MCP |
 | `sheet` | `whoami check read write append clear create` | service-account Sheets r/w |
+| `slides` | `check outline layouts thumb pdf` · `build apply hide unhide duplicate move insert notes replace create` | Google Slides: compact outline (ids, geometry in inches, text, fonts, colours, notes), slide PNG / deck PDF, and edits sent as one `batchUpdate` guarded by the deck's revision; `build` turns an inch-based YAML/JSON spec (text boxes, shapes, tables, lines, images) into one atomic batch and warns on text overflow. Uses the `drive` scope; the **slides-edit** skill has the spec format |
 | `xlsx` | `diff OLD NEW [--json J] [--summary S] [-o MD] [--formulas] [--values]` · `verify NARRATIVE.md DIFF.json` | row+column-aligned diff of two `.xlsx` workbooks -> a deterministic JSON fact graph (headline metrics, roles, causal links) + capped Markdown; `verify` is the anti-hallucination gate. Local; no credentials. The `workbook-diff` skill turns this into a verified narrative |
 | `git` | `status save sync pr` | branch-off-protected, co-author trailer, rebase-sync, PR |
 | `compose` | `status run accept scaffold graph` | config-driven document-composition pipeline (`pipeline.yaml`); `inputs` syncs external sources; `assimilate`/`digest` close the feedback loop |
@@ -362,7 +364,7 @@ bizconnect/
   xlsxdiff.py      workbook-diff engine: fact graph, headlines, causal links (openpyxl)
   xlsxverify.py    mechanical narrative verifier (anti-hallucination gate)
   connectors/
-    gdocs.py  gsheets.py  xlsx.py  git.py
+    gdocs.py  gsheets.py  gslides.py  xlsx.py  git.py
     notion.py      Notion API helpers + token verbs (whoami/check/read/upload/fill/sync)
     notiontree.py  two-way file <-> Notion sync via notion.yaml (link/map/outline/locate/diff/status/push/pull)
     compose.py  register.py  docreg.py  deliverable.py  secrets.py

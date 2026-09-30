@@ -1,4 +1,4 @@
-"""Shared Google service-account auth for the Google connectors (gdocs, gsheets).
+"""Shared Google service-account auth for the Google connectors (gdocs, gsheets, gslides).
 
 Credentials come from the central store (config.service_account_file()). Access to
 any individual file/sheet is gated by SHARING that file with the service-account
@@ -66,6 +66,15 @@ def client_email():
     key = config.service_account_file()
     try:
         return json.loads(key.read_text(encoding="utf-8")).get("client_email")
+    except Exception:
+        return None
+
+
+def client_id():
+    """The service account's OAuth client id (what domain-wide delegation is granted to)."""
+    key = config.service_account_file()
+    try:
+        return json.loads(key.read_text(encoding="utf-8-sig")).get("client_id")
     except Exception:
         return None
 

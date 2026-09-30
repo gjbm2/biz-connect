@@ -1,6 +1,6 @@
 """bizconnect CLI — `bizconnect <service> <verb> [args]`.
 
-Services:  gdoc | notion | sheet | xlsx | git | compose | deliverable | register | docreg | secrets
+Services:  gdoc | notion | sheet | slides | xlsx | git | compose | deliverable | register | docreg | secrets
 Top-level: doctor | init | update | version | help
 
 Normally invoked through the `bizconnect` command shim (bin/, on PATH inside Claude Code)
@@ -18,6 +18,7 @@ from . import __version__, config
 
 SERVICES = {"gdoc": "gdocs", "gdocs": "gdocs", "notion": "notion",
             "sheet": "gsheets", "sheets": "gsheets", "gsheet": "gsheets", "git": "git",
+            "slides": "gslides", "slide": "gslides", "gslides": "gslides",
             "xlsx": "xlsx", "workbook": "xlsx",
             "compose": "compose", "register": "register", "docreg": "docreg",
             "secrets": "secrets", "secret": "secrets",
@@ -36,6 +37,8 @@ USAGE = """biz-connect — business-service connectors for this repo.
   bizconnect notion whoami|check|read|upload|fill|sync   token check, read pages, upload local media, mirror a hub
   bizconnect gdoc   push|pull|status|link|unlink|list|comments|diff|resolve|docx   Markdown <-> Google Docs (+ feedback capture, .docx export)
   bizconnect sheet  whoami|check|read|write|append|clear|create
+  bizconnect slides check|outline|layouts|thumb|pdf    read a Google Slides deck (outline, PNG, PDF)
+  bizconnect slides apply|build|hide|unhide|duplicate|move|insert|notes|replace|create   guarded edits
   bizconnect xlsx   diff OLD.xlsx NEW.xlsx [-o OUT.md] [--formulas] [--values]  structural workbook diff
   bizconnect git    status|save|sync|pr                  standardised git flow
   bizconnect compose status|run|accept|scaffold|graph    config-driven doc-composition pipeline
@@ -206,7 +209,7 @@ def cmd_doctor():
         rep.warn("NOTION_VERSION", f"set to {nv!r} — remove it; the Notion sync pins the API version it needs")
 
     # -- Google
-    print("Google (gdoc / sheet connectors):")
+    print("Google (gdoc / sheet / slides connectors):")
     google_ok = False
     sa = config.service_account_file()
     if sa.exists():
