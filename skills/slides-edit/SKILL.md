@@ -1,6 +1,6 @@
 ---
 name: slides-edit
-description: "Read and edit Google Slides decks: outline a deck (slide ids, layouts, element geometry in inches, text, fonts, colours, notes), render a slide to PNG or the deck to PDF, hide/unhide/move/duplicate/insert slides, set speaker notes, replace text, apply a raw batchUpdate, and build a styled slide from a simple inch-based spec in one atomic, revision-guarded write. Use when the user wants to change, add to, check or look at a Google Slides presentation (docs.google.com/presentation link)."
+description: "Read and edit Google Slides decks: outline a deck (slide ids, layouts, element geometry in inches, text, fonts, colours, notes), render a slide to PNG or the deck to PDF, hide/unhide/move/duplicate/insert slides, set speaker notes, replace text, apply a raw batchUpdate, and build a styled slide from a simple inch-based spec in one atomic, revision-guarded write. Use when the user wants to change, add to, check or look at a Google Slides presentation (docs.google.com/presentation link). Slides has no suggestion mode, so a request to suggest, propose or review changes to a deck means listing the proposed changes for approval before writing anything."
 allowed-tools: Bash(bizconnect *), Bash(python *), Bash(python3 *), Bash(py *), Read, Write, Edit
 ---
 
@@ -10,6 +10,11 @@ Every write reads the deck first and sends **one** `batchUpdate` guarded by
 `writeControl.requiredRevisionId`. If anyone changed the deck in between, Google rejects the
 whole batch, nothing is written, and the command exits 3 with `REVISION MISMATCH`. Never retry
 blindly: re-run `outline`, check your plan still fits the deck as it now is, then write again.
+
+**No suggestion mode.** Google Slides has no Suggesting mode, in the editor or the API, so every
+write here changes the deck. When the user asks you to *suggest*, *propose* or *review* changes
+to a deck, list them in your reply (slide, element, current text, proposed text) and write only
+once they approve. Google Docs is the only editor that takes suggestions (gdoc-sync `--suggest`).
 
 ```bash
 bizconnect slides check    <deck>                        # access pre-flight: title, revision, size

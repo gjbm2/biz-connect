@@ -1,59 +1,92 @@
 ---
 name: gdoc-sync
-description: Edit, update or sync a Google Doc. Use for ANY request to edit, update, add to, fill in or fix a Google Doc (a docs.google.com link, or a Doc bound in connections.yaml), including one someone is editing live; and to push a repo Markdown file to a Doc, pull a Doc back as Markdown, link a file to a Doc, or check sync. The claude.ai Google Drive connector cannot edit a Doc's content (it changes only a file's title and folder), so never use it, or a copy of the Doc, to make an edit.
+description: Read, edit, or suggest changes to a Google Doc in place, and sync Docs with repo Markdown. Use for ANY request about a Doc's content (a docs.google.com/document link, or a Doc bound in connections.yaml) - "suggest/propose improvements", "review", "tighten", "edit", "update", "add", "fill in", "fix", "cut" - and to push a Markdown file to a Doc, pull a Doc back as Markdown, link a file to a Doc, or check sync. Requests to suggest, propose, review or improve are written as real Google Docs suggestions (Suggesting mode, `--suggest`) that the Doc's editors accept or reject. The claude.ai Google Drive connector cannot edit a Doc's content (it changes only a file's title and folder), so never use it, or a copy of the Doc, to make an edit.
 allowed-tools: Bash(bizconnect *), Bash(python *), Bash(python3 *), Bash(py *), Read, Edit, Write
 ---
 
-# Google Docs: edit in place, and Markdown sync
+# Google Docs: read, edit or suggest in place; Markdown sync
 
-Two ways to change a Doc:
-
-- **Passage edits** (`insert`, `replace`) change one passage through the Docs API and leave
-  everything else untouched: the Doc's formatting, comments and other people's text. Use these
-  for **any Doc that people edit**, and for any edit to a Doc you were handed as a link.
-- **`push`** replaces the Doc's **whole body** with a fresh import of a local Markdown file
-  (Drive imports Markdown natively → real headings, bold, lists, tables, links). Use it only
-  for a Doc that the repo file alone produces. On a Doc people edit it resets their formatting.
-
+Change a Doc **in place**, one passage at a time: `insert`, `replace` and `delete` touch only
+the passage you name and leave the rest (formatting, comments, other people's text) alone.
 Never make a copy of a Doc to get round an edit, and never rename one without asking. If an
 in-place edit isn't possible, say so and stop.
 
-`pull` exports the Doc back to Markdown. The binding (which file ↔ which Doc) lives in the
-repo's `connections.yaml` under `google.docs`, filled in automatically on first push.
+`push` is different: it replaces the Doc's **whole body** with a fresh import of a local
+Markdown file. Use it only for a Doc that a repo file alone produces (see "Markdown sync").
+
+## First: suggest or edit?
+
+Decide before the first write, from the user's words, and use the same mode for every write in
+the task:
+
+| The user says | Mode |
+|---|---|
+| "suggest", "propose", "recommend", "review", "improve", "tighten", "what would you change", "mark up", "with suggestions on" | **Suggest**: add `--suggest` to every write |
+| "edit", "update", "change", "fix", "add", "fill in", "apply", "make it say" | **Edit**: write directly |
+| unclear, or a Doc the user hasn't asked you to change | **Suggest** |
+
+`--suggest` writes real Google Docs suggestions, as if someone had typed in Suggesting mode: the
+Doc's editors see each one marked up, with Accept and Reject, and the text doesn't change until
+someone accepts. Suggestions show under the name of the account biz-connect acts as (the
+impersonated user, if delegation is set). Say in your reply which mode you used.
+
+Only Google **Docs** can take suggestions. Slides, Sheets and Notion have no suggestion mode in
+their APIs; see those skills before proposing changes there.
+
+## Example: "suggest improvements to the top part of this doc <link>"
+
+```bash
+bizconnect gdoc read "<link>"     # the Doc as quotable text; find "the top part"
+bizconnect gdoc replace "<link>" "<exact sentence, as read prints it>" "<better sentence>" --suggest
+bizconnect gdoc insert  "<link>" --after "<anchor text>" --md "**A missing point.**" --suggest
+bizconnect gdoc delete  "<link>" "<anchor text of a paragraph to cut>" --suggest
+bizconnect gdoc read "<link>"     # check: your suggestions show as [+inserted+] / [-deleted-]
+```
+
+- **Scope:** change only what was asked. "The top part" means the title block and the opening
+  section(s) before the body proper; leave the rest alone.
+- **One improvement per call**, so each can be accepted or rejected on its own. Prefer
+  sentence-level `replace` to rewriting whole paragraphs.
+- **Report** each suggestion in one line (what and why), and the link.
+
+## Reading a Doc
+
+`gdoc read <file|doc-url>` prints the Doc one line per paragraph, in the Doc's **exact
+characters**: quote these for anchors and `replace`. Headings show as `#`, bullets as `* `,
+table rows as `| a | b |`, the title as `(title)`, and pending suggestions as `[+inserted+]`
+and `[-deleted-]`. `--md` prints Drive's Markdown export instead: it shows bold, italic and
+links, but escapes characters (`\$`, `2026\.`), so never quote it into `replace`.
 
 ## Passage edits (in place)
 
 ```bash
-bizconnect gdoc insert <file|doc-url> --after  "<anchor text>" --from snippet.md
-bizconnect gdoc insert <file|doc-url> --before "<anchor text>" --md "**One paragraph.**"
+bizconnect gdoc insert  <file|doc-url> --after  "<anchor text>" --from snippet.md
+bizconnect gdoc insert  <file|doc-url> --before "<anchor text>" --md "**One paragraph.**"
 bizconnect gdoc replace <file|doc-url> "<exact text in the Doc>" "<new text>"
-# add --suggest to write the edit as suggestions; --dry-run prints the requests and sends nothing
+bizconnect gdoc delete  <file|doc-url> "<anchor text>"
+# each takes --suggest (write as suggestions) and --dry-run (print the requests, send nothing)
 ```
 
-- **`--suggest`** writes the edit as Google Docs suggestions (Suggesting mode) instead of
-  changing the text: the Doc's editors see each one marked up and accept or reject it in the
-  Doc. Use it whenever the user wants to review edits before they land. Suggestions show under
-  the name of the account biz-connect acts as (the impersonated user, if delegation is set).
-
-- **Read first:** `gdoc pull` (bound file) or `gdoc diff`, so you edit against the Doc as it is.
+- **Read first** (`gdoc read`), so you edit against the Doc as it is now.
 - **insert** places Markdown paragraphs before or after the one paragraph that contains the
   anchor (smart quotes, dashes, case and spacing don't matter; table cells aren't searched).
   It takes headings, paragraphs and top-level bullets with **bold**, *italic* and links. New
   paragraphs copy the style of the nearest existing paragraph of the same kind, and a bullet
   next to an existing list joins it. Put the anchor where the new text belongs: `--after` the
   last bullet of a list to extend it, `--before` a heading to add a section above it.
-- **replace** swaps text that occurs **exactly once** in the Doc, table cells included, and
-  keeps its formatting. Use the Doc's own characters (it says so if quotes or dashes differ).
-  Lengthen the text until it is unique.
-- Both are **one guarded write**: if anyone edits the Doc between the read and the write,
-  nothing is written ("REVISION MISMATCH"): re-run. Both refuse to apply the same edit twice.
-- Several edits are several calls; check the result with `gdoc diff` at the end.
-- With `--suggest`, nothing changes until someone accepts; a re-run is still refused (pending
-  suggestions count as applied).
+- **replace** swaps text that occurs **exactly once** in the Doc, table cells included. Use the
+  Doc's own characters (it says so if quotes or dashes differ) and lengthen the text until it is
+  unique. Keep the find text within one style (e.g. the words after a bold label): the new text
+  takes a single style.
+- **delete** removes the one whole paragraph that contains the anchor. It can't remove the
+  Doc's last paragraph or the line just before a table; `replace` their text instead.
+- Each call is **one guarded write**: if anyone edits the Doc between the read and the write,
+  nothing is written ("REVISION MISMATCH"): read again and re-run. A repeated edit is refused,
+  and pending suggestions count as applied.
 - Passage edits change the Doc only. To bring a bound local file level with it afterwards,
-  `gdoc pull` (with `--force` once you have checked that the diff shows only your edits).
+  `gdoc pull` (with `--force` once you have checked that `gdoc diff` shows only your edits).
 
-## How to run
+## Markdown sync: how to run
 
 All verbs go through the launcher (it bootstraps its own venv — nothing to install):
 

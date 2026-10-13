@@ -14,8 +14,9 @@ Both directions are guarded against clobbering: `pull` refuses to overwrite loca
 edits and `push` refuses to overwrite Doc-side edits — pass `--force` to override.
 
 `push` replaces the Doc's whole body (a fresh Markdown import). For a Doc that people
-edit, use the passage verbs instead: `insert` and `replace` change one passage through
-the Docs API and leave everything else (formatting, comments, other text) untouched.
+edit, use the passage verbs instead: `insert`, `replace` and `delete` change one passage
+through the Docs API and leave everything else (formatting, comments, other text) untouched.
+With `--suggest` they write Google Docs suggestions for the Doc's editors to accept or reject.
 
 Verbs
 -----
@@ -27,7 +28,11 @@ Verbs
                                                       paragraph containing <anchor>, in place
   replace <file|doc> <find> <with> [--suggest] [--dry-run]
                                                       replace text that occurs exactly once, in place
+  delete  <file|doc> <anchor> [--suggest] [--dry-run] remove the one paragraph containing <anchor>
                                                       (--suggest: write as suggestions to accept/reject)
+  read    <file|doc> [--md]                           print the Doc as text to quote from: exact
+                                                      characters, # headings, * bullets, | rows |,
+                                                      pending suggestions as [+ins+] / [-del-]
   link  <file> <doc-url-or-id>                        bind an existing Doc to a local file
   status [file]                                       show drift (local vs last sync, + Doc mod time)
   list                                                list all bindings in this repo
@@ -1243,6 +1248,112 @@ def cmd_replace(argv):
                done, suggest=suggest)
 
 
+def _plan_delete(tab, tab_id, anchor):
+    """(requests, paragraph) to remove the one body paragraph containing `anchor`."""
+    content = tab.get("body", {}).get("content", [])
+    p = _find_anchor(_body_paras(tab), anchor)
+    if all(r.get("suggestedDeletionIds") for r in p["runs"] if r.get("content", "").strip()):
+        sys.exit(f"{p['text'].strip()[:60]!r} is already marked for deletion. Nothing was written.")
+    i = next(k for k, el in enumerate(content)
+             if "paragraph" in el and el.get("startIndex") == p["start"])
+    nxt = content[i + 1] if i + 1 < len(content) else None
+    if nxt is None:
+        sys.exit("can't remove the Doc's last paragraph; replace its text instead.")
+    if "paragraph" not in nxt:
+        sys.exit("can't remove the paragraph just before a table (Google keeps that line); "
+                 "replace its text instead.")
+    rng = {"startIndex": p["start"], "endIndex": p["end"]}
+    if tab_id:
+        rng["tabId"] = tab_id
+    return [{"deleteContentRange": {"range": rng}}], p
+
+
+def _marked_text(p):
+    """A paragraph's text with pending suggestions marked [+inserted+] and [-deleted-]."""
+    out = []
+    for e in p.get("elements", []):
+        tr = e.get("textRun") or {}
+        c = tr.get("content", "").replace("\n", "")
+        if c:
+            out.append(f"[-{c}-]" if tr.get("suggestedDeletionIds") else
+                       f"[+{c}+]" if tr.get("suggestedInsertionIds") else c)
+    return "".join(out)
+
+
+def _suggestion_ids(p):
+    ids = set(p.get("suggestedParagraphStyleChanges") or {}) | set(p.get("suggestedBulletChanges") or {})
+    for e in p.get("elements", []):
+        tr = e.get("textRun") or {}
+        ids |= set(tr.get("suggestedInsertionIds") or []) | set(tr.get("suggestedDeletionIds") or [])
+        ids |= set(tr.get("suggestedTextStyleChanges") or {})
+    return ids
+
+
+def _read_lines(tab):
+    """(lines, pending suggestion ids): the Doc's body as text to quote from, one line per
+    paragraph: '#' headings, '* ' bullets, '| a | b |' table rows."""
+    lines, ids = [], set()
+    for el in tab.get("body", {}).get("content", []):
+        if "paragraph" in el:
+            p = el["paragraph"]
+            ids |= _suggestion_ids(p)
+            t = _marked_text(p)
+            if not t.strip():
+                continue
+            named = p.get("paragraphStyle", {}).get("namedStyleType", "")
+            if named.startswith("HEADING_"):
+                t = "#" * int(named[-1]) + " " + t
+            elif named in ("TITLE", "SUBTITLE"):
+                t = f"({named.lower()}) {t}"
+            elif p.get("bullet"):
+                t = "  " * p["bullet"].get("nestingLevel", 0) + "* " + t
+            lines.append(t)
+        elif "table" in el:
+            for row in el["table"].get("tableRows", []):
+                cells = []
+                for cell in row.get("tableCells", []):
+                    paras = [c["paragraph"] for c in cell.get("content", []) if "paragraph" in c]
+                    for q in paras:
+                        ids |= _suggestion_ids(q)
+                    cells.append(" / ".join(t for t in map(_marked_text, paras) if t.strip()))
+                lines.append("| " + " | ".join(cells) + " |")
+    return lines, ids
+
+
+def cmd_read(argv):
+    arg = _positional(argv)
+    if not arg:
+        sys.exit("read needs <file|doc-url>")
+    data, doc_id, label = _edit_target(arg)
+    if "--md" in argv:
+        try:
+            print(_export_md(_drive(data), doc_id).decode("utf-8"))
+        except Exception as e:
+            _die_google(e, doc_id)
+        return
+    d, tab, _tab_id = _fetch_doc(_docs(data), doc_id)
+    lines, ids = _read_lines(tab)
+    print(f"{d.get('title', '')}  ({label})")
+    if ids:
+        print(f"{len(ids)} pending suggestion(s): text marked [+inserted+] or [-deleted-]")
+    print("\n" + "\n".join(lines))
+
+
+def cmd_delete(argv):
+    pos = [a for a in argv if a not in ("--dry-run", "--suggest")]
+    if len(pos) != 2 or not pos[1]:
+        sys.exit("delete needs <file|doc-url> <anchor text>")
+    arg, anchor = pos
+    data, doc_id, label = _edit_target(arg)
+    docs = _docs(data)
+    d, tab, tab_id = _fetch_doc(docs, doc_id)
+    reqs, p = _plan_delete(tab, tab_id, anchor)
+    suggest = "--suggest" in argv
+    _send_edit(docs, doc_id, d["revisionId"], reqs, "--dry-run" in argv,
+               f"{'suggested deleting' if suggest else 'deleted'} paragraph "
+               f"{p['text'].strip()[:50]!r} in {label}", suggest=suggest)
+
+
 def _refresh_live_word_doc(target: Path, content: bytes, save: bool) -> bool:
     """The target .docx is write-locked because it is OPEN in Word. Instead of
     failing, refresh the OPEN document's content in place via COM (Windows only):
@@ -1365,7 +1476,8 @@ VERBS = {
     "push": cmd_push, "pull": cmd_pull, "link": cmd_link, "unlink": cmd_unlink,
     "status": cmd_status, "list": cmd_list,
     "comments": cmd_comments, "annotate": cmd_annotate, "diff": cmd_diff, "resolve": cmd_resolve,
-    "docx": cmd_docx, "insert": cmd_insert, "replace": cmd_replace,
+    "docx": cmd_docx, "read": cmd_read, "insert": cmd_insert, "replace": cmd_replace,
+    "delete": cmd_delete,
 }
 
 

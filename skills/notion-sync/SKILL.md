@@ -1,6 +1,6 @@
 ---
 name: notion-sync
-description: "Keep a project folder's Markdown files and Notion in two-way sync through a mapping file (notion.yaml) — each file mapped to a whole Notion page, to the SECTION of a page under a heading, a folder of notes to child pages, or a folder of front-matter files to a Notion database. Use when the user wants project notes/research/state kept \"in Notion\", to publish local Markdown into sections of an existing hand-built Notion page, to pull people's Notion edits back into the repo, to set up or change a mapping, to fill in or update one block the user links to (a URL ending in #<block-id>: fill in that slot only, via `notion locate`), or to check or compare what's out of sync. Guarded both ways; never touches unmapped Notion content."
+description: "Keep a project folder's Markdown files and Notion in two-way sync through a mapping file (notion.yaml) — each file mapped to a whole Notion page, to the SECTION of a page under a heading, a folder of notes to child pages, or a folder of front-matter files to a Notion database. Use when the user wants project notes/research/state kept \"in Notion\", to publish local Markdown into sections of an existing hand-built Notion page, to pull people's Notion edits back into the repo, to set up or change a mapping, to fill in or update one block the user links to (a URL ending in #<block-id>: fill in that slot only, via `notion locate`), or to check or compare what's out of sync. Guarded both ways; never touches unmapped Notion content. Notion's API has no suggestion mode, so a request to suggest or propose changes to a Notion page means agreeing how to present them before touching it."
 allowed-tools: Bash(bizconnect *), Bash(python *), Bash(python3 *), Bash(py *), Read, Edit, Write
 ---
 
@@ -10,6 +10,14 @@ Agents work on Markdown in the repo (versioned by git); people read and edit in 
 `notion.yaml` in the project folder says which file lives where in Notion, and `push` / `pull`
 move changes across — **guarded in both directions**, so neither side silently overwrites the
 other.
+
+**No suggestion mode through the API.** Notion's Suggest mode works only in the Notion editor:
+neither the API nor the Notion MCP can create a pending suggestion. When the user asks you to
+*suggest*, *propose* or *review* changes to a Notion page, say so in your first reply and agree
+how to present them before touching the page (for example, the proposed changes listed in your
+reply, applied with `push` once approved). Never imitate suggestions in the page with coloured,
+highlighted or struck-through text. Google Docs is the only connector that takes real
+suggestions (gdoc-sync `--suggest`).
 
 Every command here is `bizconnect notion <verb> ...`. Inside Claude Code the plugin puts
 `bizconnect` on PATH. If it isn't found (the plugin was installed or updated in this session, or

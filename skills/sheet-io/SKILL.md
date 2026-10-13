@@ -1,6 +1,6 @@
 ---
 name: sheet-io
-description: Read and write Google Sheets via the service account. Use when the user wants to read spreadsheet data reliably (exact ranges, CSV/JSON), or write/append/clear cells, or create a sheet — anything the read-only Google Drive connector cannot do. The target sheet must be shared with the service-account email.
+description: Read and write Google Sheets via the service account. Use when the user wants to read spreadsheet data reliably (exact ranges, CSV/JSON), or write/append/clear cells, or create a sheet — anything the read-only Google Drive connector cannot do. The target sheet must be shared with the service-account email. Sheets has no suggestion mode, so a request to suggest or propose changes means listing them for approval before writing.
 allowed-tools: Bash(bizconnect *), Bash(python *), Bash(python3 *), Bash(py *), Read
 ---
 
@@ -8,6 +8,10 @@ allowed-tools: Bash(bizconnect *), Bash(python *), Bash(python3 *), Bash(py *), 
 
 The read-only Drive connector can read a sheet interactively but cannot write. This
 tool writes (and reads reliably) via the central service account.
+
+**No suggestion mode.** Sheets has no Suggesting mode, so every write changes the sheet. When the
+user asks you to *suggest* or *propose* changes, list them (tab, range, current, proposed) and
+write only once they approve.
 
 ```bash
 bizconnect sheet whoami                 # service-account email to share with

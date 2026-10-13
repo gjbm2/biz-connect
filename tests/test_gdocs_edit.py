@@ -412,3 +412,42 @@ def test_replace_counts_pending_suggested_deletions_as_gone(fake):
     with pytest.raises(SystemExit, match="already in the Doc"):
         G.cmd_replace([URL, "Few hires", "Senior ICs", "--suggest"])
     assert fake.sent == []
+
+
+# ------------------------------------------------------------------ read / delete
+def test_read_prints_quotable_lines_with_suggestions_marked(fake, capsys):
+    fake.doc = make_doc([P("Title", "TITLE"), P("Section", "HEADING_2"),
+                         P("Alpha: one", bullet=True, runs=[("Alpha:", {"bold": True}), (" one", {})]),
+                         P("Was now", runs=[("Was", {}), (" now", {})]), P("End")], table_after=3)
+    runs = fake.doc["tabs"][0]["documentTab"]["body"]["content"][4]["paragraph"]["elements"]
+    runs[0]["textRun"]["suggestedDeletionIds"] = ["s1"]
+    runs[1]["textRun"]["suggestedInsertionIds"] = ["s2"]
+    G.cmd_read([URL])
+    out = capsys.readouterr().out
+    assert "2 pending suggestion(s)" in out
+    assert out.split("\n\n", 1)[1].splitlines() == [
+        "(title) Title", "## Section", "* Alpha: one", "[-Was-][+ now+]", "| Cell A |", "End"]
+
+
+def test_delete_removes_one_whole_paragraph(fake):
+    G.cmd_delete([URL, "Hire ahead", "--suggest"])
+    (body,) = fake.sent
+    tab = fake.doc["tabs"][0]["documentTab"]
+    target = next(p for p in G._body_paras(tab) if p["text"].startswith("Hire"))
+    assert body["requests"] == [{"deleteContentRange": {"range": {
+        "startIndex": target["start"], "endIndex": target["end"], "tabId": "t.0"}}}]
+    assert body["writeControl"]["writeMode"] == "SUGGEST"
+
+
+def test_delete_refuses_last_paragraph_table_neighbour_and_repeat(fake):
+    with pytest.raises(SystemExit, match="last paragraph"):
+        G.cmd_delete([URL, "Sep 2026"])
+    fake.doc = make_doc([P("Intro"), P("After")], table_after=0)
+    with pytest.raises(SystemExit, match="before a table"):
+        G.cmd_delete([URL, "Intro"])
+    fake.doc = make_doc([P("Gone"), P("Kept")])
+    fake.doc["tabs"][0]["documentTab"]["body"]["content"][1]["paragraph"]["elements"][0][
+        "textRun"]["suggestedDeletionIds"] = ["s1"]
+    with pytest.raises(SystemExit, match="already marked for deletion"):
+        G.cmd_delete([URL, "Gone", "--suggest"])
+    assert fake.sent == []
