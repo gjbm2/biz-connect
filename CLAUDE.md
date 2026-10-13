@@ -78,7 +78,7 @@ bizconnect sheet   read|write|append <sheet-url>            # service-account Sh
 bizconnect slides  outline|thumb|pdf|build|apply|hide|move|insert|notes <deck>   # Google Slides (slides-edit skill)
 bizconnect xlsx    diff OLD.xlsx NEW.xlsx                   # structural workbook diff
 bizconnect git     save|sync|pr                             # safe, standardised git flow
-bizconnect browser install|status|add|menu                  # Ask Claude browser extension (browser-bridge skill)
+bizconnect browser install|status|add|menu|trace            # Ask Claude browser extension (browser-bridge skill)
 bizconnect compose status|run|accept|graph                  # doc-composition pipeline (needs pipeline.yaml); `run inputs` syncs sources
 bizconnect doctor                                           # diagnose setup
 bizconnect update [--auto]                                  # check for a newer version; --auto: Claude Code updates biz-connect at startup

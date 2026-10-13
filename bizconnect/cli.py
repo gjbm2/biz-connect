@@ -47,7 +47,7 @@ USAGE = """biz-connect — business-service connectors for this repo.
   bizconnect register init|pull|upsert|open|status|resolve|journal   Notion open-points register (review feedback)
   bizconnect docreg  init|log|list|pull   Notion catalogue of produced doc instances + versions
   bizconnect secrets pull|status          pull this repo's shared scoped creds (GCP Secret Manager) into the central store
-  bizconnect browser install|status|add|menu|uninstall   browser extension: select text on a page, hand it to Claude Code
+  bizconnect browser install|status|add|menu|trace|uninstall   browser extension: hand a page selection or file to Claude Code
 
 Notion sync is configured per folder in notion.yaml; other bindings (which Doc/page this
 repo uses) live in ./connections.yaml. The doc pipeline is configured by ./pipeline.yaml

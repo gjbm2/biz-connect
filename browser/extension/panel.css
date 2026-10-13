@@ -116,4 +116,5 @@ button { cursor: pointer; border-radius: 8px; border: 1px solid transparent; pad
 button:disabled { opacity: .5; cursor: default; }
 button.secondary { background: transparent; color: var(--text); border-color: var(--line); }
 button.link { background: none; border: 0; padding: 0; color: var(--accent); font-weight: 500; font-size: 12px; }
+button.link.trace { margin-left: auto; color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
 kbd { font: 11px ui-monospace, Consolas, monospace; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; background: var(--bg); }

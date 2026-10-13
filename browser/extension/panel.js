@@ -10,11 +10,13 @@ const $ = (id) => document.getElementById(id);
 
 const S = {
   port: null, hello: null, ctx: null, itemId: null, lastAt: 0,
-  session: false, running: false, sessionId: null, contextChanged: false,
+  session: false, running: false, sessionId: null, runId: null, contextChanged: false,
   autoRun: false, windowId: null, popup: location.search.includes('popup=1'),
   files: [],            // attached files: {id, name, state: fetching|ready|failed, path, bytes, mime, url, error}
 };
 const FILE_KINDS = new Set(['file', 'image', 'video', 'audio']);
+// Links that are files even when the page script missed the click (same test as background.js).
+const FILE_URL = /[?&](view=att|attid=)|\.(pdf|docx?|xlsx?|pptx?|csv|tsv|txt|md|rtf|odt|ods|png|jpe?g|gif|webp|svg|zip|json|xml|eml|msg|mp3|mp4|mov|wav)(?:$|[?#])/i;
 const MAX_DROP_BYTES = 48 * 1024 * 1024;   // dropped/pasted files travel through native messaging
 const CHUNK = 3 * 1024 * 1024;
 
@@ -167,7 +169,10 @@ function renderState() {
   $('stop').hidden = !S.running;
   const has = !!S.sessionId;
   $('vscode').hidden = !has;
-  $('copysid').hidden = !has;
+  const trace = $('trace');
+  trace.hidden = !(S.sessionId || S.runId);
+  trace.textContent = S.sessionId ? `session ${S.sessionId.slice(0, 8)} ⧉` : `run ${S.runId} ⧉`;
+  trace.title = `Copy the ids to trace this run${S.runId ? `\nrun ${S.runId}` : ''}${S.sessionId ? `\nsession ${S.sessionId}` : ''}`;
   $('newrun').hidden = !S.session || S.running;
   const ready = S.files.filter((f) => f.state === 'ready');
   $('input').placeholder = S.session && !S.contextChanged ? 'Follow up…'
@@ -331,6 +336,7 @@ function send(obj) {
 }
 
 async function onHost(msg) {
+  if (msg.run_id) S.runId = msg.run_id;
   switch (msg.type) {
     case 'hello': {
       // biz-connect updated the extension's files: reload once to pick them up.
@@ -401,11 +407,11 @@ async function onHost(msg) {
       S.sessionId = msg.session_id || S.sessionId;
       const secs = Math.round((msg.duration_ms || 0) / 1000);
       if (msg.is_error) note('error', `Claude stopped: ${(msg.errors || []).join('; ') || msg.subtype}`);
-      activity('', 'done', `${secs}s · ${msg.turns} turn${msg.turns === 1 ? '' : 's'}`);
+      activity('', 'done', `${secs}s · ${msg.turns} turn${msg.turns === 1 ? '' : 's'} · session ${(S.sessionId || '').slice(0, 8)}`);
       break;
     }
     case 'error':
-      note('error', msg.text);
+      note('error', msg.run_id ? `${msg.text} (${msg.run_id})` : msg.text);
       S.running = false;
       break;
     case 'ended':
@@ -494,6 +500,7 @@ function run() {
   const item = ((S.hello && S.hello.menu) || []).find((m) => m.id === S.itemId);
   const files = S.files.filter((f) => f.state === 'ready')
     .map(({ path, name, mime, bytes, url }) => ({ path, name, mime, bytes, url }));
+  const failed = S.files.filter((f) => f.state === 'failed').map(({ name, url, error }) => ({ name, url, error }));
   const clip = files.length ? `\n📎 ${files.map((f) => f.name).join(', ')}` : '';
   if (fresh) {
     if (!text && !item) {
@@ -503,17 +510,18 @@ function run() {
     const ctx = { ...(S.ctx || {}) };
     if (!$('paste').hidden && $('paste').value.trim()) ctx.selection = $('paste').value.trim();
     if (S.session) $('log').innerHTML = '';
-    if (!send({ type: 'run', workspace: $('workspace').value || undefined, context: ctx, instruction: text, item_id: item ? item.id : undefined, files })) return;
+    if (!send({ type: 'run', workspace: $('workspace').value || undefined, context: ctx, instruction: text, item_id: item ? item.id : undefined, files, failed })) return;
     add(div('msg user', esc([item && `[${item.label}]`, text].filter(Boolean).join(' ') + clip)));
     S.session = true;
     S.contextChanged = false;
     S.sessionId = null;
+    S.runId = null;
   } else {
     if (!text) return;
-    if (!send({ type: 'followup', text, files })) return;
+    if (!send({ type: 'followup', text, files, failed })) return;
     add(div('msg user', esc(text + clip)));
   }
-  S.files = S.files.filter((f) => f.state !== 'ready');       // sent: they now live in the transcript
+  S.files = S.files.filter((f) => f.state === 'fetching');    // sent (or reported): now in the transcript
   renderFiles();
   S.running = true;
   $('input').value = '';
@@ -531,7 +539,7 @@ function applyPending(p) {
   renderChips();
   renderState();
   const t = S.ctx.target;
-  if (t && t.url && FILE_KINDS.has(t.kind)) stageTarget(t);   // right-clicked a file: fetch it now
+  if (t && t.url && (FILE_KINDS.has(t.kind) || FILE_URL.test(t.url))) stageTarget(t);   // a file: fetch it now
   if (S.itemId && !S.running) run();
   else $('input').focus();
 }
@@ -550,16 +558,28 @@ $('newrun').onclick = () => {
   $('log').innerHTML = '';
   S.session = false;
   S.sessionId = null;
+  S.runId = null;
   S.contextChanged = false;
   renderState();
 };
 $('vscode').onclick = () => send({ type: 'open_vscode', session_id: S.sessionId, workspace: $('workspace').value });
-$('copysid').onclick = async () => {
+// Everything an agent (or you) needs to trace this run: paste it into a Claude session.
+$('trace').onclick = async () => {
+  const id = S.sessionId || S.runId;
+  const page = S.ctx && S.ctx.url ? S.ctx.url.split('?')[0] : '';
+  const text = [
+    `Ask Claude run ${S.runId || '-'}, session ${S.sessionId || '(none: Claude did not start)'}`
+      + ` (workspace ${$('workspace').value}, ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`
+      + `${S.hello ? `, biz-connect ${S.hello.version}` : ''})`,
+    page && `page: ${page}`,
+    `trace: bizconnect browser trace ${id}`,
+    S.sessionId && `resume: claude --resume ${S.sessionId}`,
+  ].filter(Boolean).join('\n');
   try {
-    await navigator.clipboard.writeText(`claude --resume ${S.sessionId}`);
-    note('ok', 'Copied. Run it in a terminal in the workspace folder.');
+    await navigator.clipboard.writeText(text);
+    note('ok', 'Copied the trace ids. Paste them into a Claude session to investigate this run.');
   } catch (e) {
-    note('warn', `claude --resume ${S.sessionId}`);
+    note('warn', text);
   }
 };
 $('workspace').onchange = () => send({ type: 'hello', workspace: $('workspace').value });

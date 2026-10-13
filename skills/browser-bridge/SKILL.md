@@ -86,6 +86,7 @@ Send, Save or Submit. Each page edit lands on the page's own undo stack (Ctrl+Z)
 browser:
   permission_mode: auto        # auto (default) | default | acceptEdits | plan
   model:                       # blank = the user's Claude Code default (e.g. set `sonnet` for speed)
+  effort: medium               # low | medium (default) | high | xhigh | max; not the user's global effort
   deny: []                     # extra tools browser runs may never use (fnmatch patterns on tool names)
   confirm_page_writes: false   # true = approve every page edit in the panel
   load_plugin: true            # load biz-connect into runs even if the plugin is disabled in settings
@@ -118,11 +119,27 @@ browser:
 workspace menu switches between them. `bizconnect browser default NAME` and
 `bizconnect browser remove NAME` manage the list.
 
+## Tracing a run
+
+Every run gets a run id (`r-xxxxxxxx`) the moment it starts, and a Claude session id once Claude
+Code starts. The panel shows the id at the bottom right; clicking it copies a short block (run id,
+session id, workspace, page, version, and the trace and resume commands) to paste into any
+Claude session.
+
+- `bizconnect browser trace` lists recent runs with their outcome.
+- `bizconnect browser trace <run id or session id>` (the first 8 characters will do) prints the
+  bridge's log for that run (start, Claude starting, page edits, permission answers, blocks,
+  files, result, errors), a summary of the Claude transcript (prompt, tool calls, failed tool
+  results, replies) and the resume command.
+- The log is `~/.config/biz-connect/browser/host.log` (rotated, with process ids); it keeps URLs
+  without their query strings.
+
 ## Troubleshooting
 
 - **"The biz-connect bridge isn't installed for this browser"**: run `bizconnect browser
   install`, then reopen the panel. `bizconnect browser status` shows which browsers are registered.
-- **The run fails or stops**: read `~/.config/biz-connect/browser/host.log`.
+- **The run fails, stops or misbehaves**: copy the id from the panel and run
+  `bizconnect browser trace <id>` (or paste the copied block into a Claude session).
 - **"claude is not on PATH"** at install: the bridge then uses the copy of Claude Code bundled
   with the SDK, which has its own login. Install Claude Code and re-run the install.
 - **A page edit is refused**: the selection is not in an editable area, the page reloaded, or

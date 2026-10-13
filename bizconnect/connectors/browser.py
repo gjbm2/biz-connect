@@ -16,6 +16,8 @@ for any other site. Full guide: the browser-bridge skill.
   remove NAME            unregister a workspace
   default NAME           the workspace the panel opens on
   menu [PATH]            check a workspace's `browser:` settings and right-click menu
+  trace [ID]             recent runs; with a run id (r-...) or session id, that run in full:
+                         the bridge log, the Claude transcript summary, the resume command
   uninstall              remove the host registrations (the extension you remove in the browser)
 
 Per-workspace settings live in that repo's connections.yaml:
@@ -34,6 +36,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -358,6 +361,126 @@ def cmd_menu(args):
     return 1 if st["problems"] else 0
 
 
+LOG_RE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+ (\d+) (\w+) (.*)$")
+RUN_RE = re.compile(r"^\[(r-[0-9a-f]{8})\] (\S+) ?(.*)$")
+SESSION_RE = re.compile(r"session=([0-9a-f]{8}-[0-9a-f-]{27})")
+
+
+def _log_lines():
+    d = store_dir()
+    for f in (d / "host.log.2", d / "host.log.1", d / "host.log"):
+        if f.exists():
+            for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+                m = LOG_RE.match(line)
+                if m:
+                    yield m.groups()
+
+
+def runs_from_log() -> dict:
+    """run id -> {start, pid, workspace, url, session, outcome, lines} rebuilt from host.log*."""
+    runs = {}
+    for ts, pid, level, msg in _log_lines():
+        m = RUN_RE.match(msg)
+        if not m:
+            continue
+        rid, kind, info = m.groups()
+        r = runs.setdefault(rid, {"id": rid, "start": ts, "pid": pid, "workspace": None, "url": None,
+                                  "session": None, "outcome": "unfinished", "lines": []})
+        r["lines"].append(f"{ts} {level:<7} {kind} {info}".rstrip())
+        if kind == "run" and info.startswith("start"):
+            kv = dict(x.split("=", 1) for x in info.split() if "=" in x)
+            r["workspace"], r["url"] = kv.get("workspace"), kv.get("url")
+        s = SESSION_RE.search(info)
+        if s:
+            r["session"] = s.group(1)
+        if kind == "result":
+            r["outcome"] = "error" if "is_error=True" in info else "ok"
+        elif kind in ("error", "stage_failed") and r["outcome"] != "ok":
+            r["outcome"] = f"error: {info[:80]}"
+        elif kind == "continued":
+            r["outcome"] = "continued in VS Code"
+    return runs
+
+
+def transcript_path(session: str) -> Path | None:
+    hits = sorted(config.claude_dir().glob(f"projects/*/{session}*.jsonl"))
+    return hits[0] if hits else None
+
+
+def transcript_summary(path: Path, limit: int = 60) -> list[str]:
+    """The run as Claude saw it: the prompt's first line, tool calls, failed tool results, replies."""
+    from ..browser_host import summarize_tool
+    out = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        kind, ts = d.get("type"), str(d.get("timestamp") or "")[11:19]
+        content = (d.get("message") or {}).get("content")
+        if kind == "user":
+            if isinstance(content, str):
+                first = content.strip().splitlines()[0] if content.strip() else ""
+                more = " (+ browser context)" if "<browser_context>" in content else ""
+                out.append(f"{ts} you:    {first[:200]}{more}")
+            for c in content if isinstance(content, list) else []:
+                if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("is_error"):
+                    body = c.get("content")
+                    text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+                    out.append(f"{ts} FAILED: {text[:240]}")
+        elif kind == "assistant":
+            for c in content if isinstance(content, list) else []:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "text" and c.get("text", "").strip():
+                    out.append(f"{ts} claude: {c['text'].strip()[:240]}".replace("\n", " "))
+                elif c.get("type") == "tool_use":
+                    out.append(f"{ts} tool:   {c.get('name')} {summarize_tool(c.get('name', ''), c.get('input') or {})[:160]}")
+    if len(out) > limit:
+        out = out[:1] + [f"... {len(out) - limit} earlier lines ..."] + out[-(limit - 1):]
+    return out
+
+
+def cmd_trace(args):
+    p = argparse.ArgumentParser(prog="bizconnect browser trace",
+                                description="Trace browser runs: recent runs, or one run in full.")
+    p.add_argument("id", nargs="?", help="a run id (r-xxxxxxxx) or a Claude session id (or its start)")
+    p.add_argument("-n", type=int, default=15, help="how many recent runs to list")
+    ns = p.parse_args(args)
+    runs = runs_from_log()
+    if not ns.id:
+        recent = sorted(runs.values(), key=lambda r: r["start"])[-ns.n:]
+        if not recent:
+            print(f"no runs logged yet ({store_dir() / 'host.log'})")
+        for r in recent:
+            sess = (r["session"] or "-")[:8]
+            print(f"{r['id']}  {r['start']}  {(r['workspace'] or '?'):<14} session {sess:<8}  "
+                  f"{r['outcome']:<22} {r['url'] or ''}")
+        return 0
+    key = ns.id.strip().lower()
+    hits = [r for r in runs.values() if r["id"] == key or (r["session"] or "").startswith(key)
+            or (len(key) >= 4 and r["id"].startswith(key))]
+    session = next((r["session"] for r in hits if r["session"]), None)
+    if not session and len(key) >= 8 and re.fullmatch(r"[0-9a-f-]+", key):
+        session = key                                   # not in the log (rotated): transcript only
+    if not hits and not (session and transcript_path(session)):
+        sys.exit(f"nothing found for {ns.id!r} in {store_dir() / 'host.log'}* or the Claude transcripts")
+    for r in hits:
+        print(f"run {r['id']}  pid {r['pid']}  workspace {r['workspace']}  session {r['session'] or '-'}"
+              f"  outcome: {r['outcome']}")
+        for line in r["lines"]:
+            print("  " + line)
+    if session:
+        path = transcript_path(session)
+        print(f"\ntranscript: {path or 'not found'}")
+        for line in transcript_summary(path) if path else []:
+            print("  " + line)
+        ws = next((r["workspace"] for r in hits if r["workspace"]), None)
+        where = (load_bridge_config().get("workspaces") or {}).get(ws) if ws else None
+        print(f"\nresume: claude --resume {session}" + (f"   (in {where})" if where else ""))
+    return 0
+
+
 def cmd_uninstall(args):
     store = store_dir()
     for b in BROWSERS:
@@ -371,7 +494,8 @@ def cmd_uninstall(args):
 
 
 VERBS = {"install": cmd_install, "status": cmd_status, "add": cmd_add, "remove": cmd_remove,
-         "default": cmd_default, "menu": cmd_menu, "uninstall": cmd_uninstall}
+         "default": cmd_default, "menu": cmd_menu, "trace": cmd_trace,
+         "uninstall": cmd_uninstall}
 
 
 def run(argv):

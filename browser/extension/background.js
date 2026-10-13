@@ -70,11 +70,14 @@ async function inject(tabId, allFrames) {
 
 // What the browser says was right-clicked: the fallback when target.js isn't in the page yet
 // (a tab opened before the extension was installed or reloaded).
+const FILE_URL = /[?&](view=att|attid=)|\.(pdf|docx?|xlsx?|pptx?|csv|tsv|txt|md|rtf|odt|ods|png|jpe?g|gif|webp|svg|zip|json|xml|eml|msg|mp3|mp4|mov|wav)(?:$|[?#])/i;
+
 function targetFromInfo(info) {
   if (!info) return null;
   const url = info.srcUrl || info.linkUrl;
   if (!url) return null;
-  const kind = info.mediaType || 'link';
+  let kind = info.mediaType || 'link';
+  if (kind === 'link' && FILE_URL.test(url)) kind = 'file';   // e.g. a Gmail attachment link
   return { kind, url, name: '', text: info.linkText || '' };
 }
 

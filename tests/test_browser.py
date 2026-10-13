@@ -367,3 +367,91 @@ def test_update_auto_turns_on_marketplace_auto_update(tmp_path, monkeypatch, cap
         "source": {"source": "directory", "path": "/src/biz-connect"}, "autoUpdate": True}
     assert U.auto_update_state() is True and (cdir / "settings.json.bak").exists()
     assert U.cmd_update(["--auto"]) == 0 and "already on" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------- trace / speed
+def test_failed_fetches_are_reported_not_hunted():
+    failed = [{"name": "Terms.docx", "url": "https://mail.google.com/x?view=att", "error": "download failed (NETWORK_FAILED)"}]
+    ctx = {"url": "https://mail.google.com/mail/u/0/#inbox",
+           "target": {"kind": "file", "url": "https://mail.google.com/x?view=att"}}
+    p = H.build_prompt(ctx, "read this", None, None, failed)
+    assert "could NOT fetch" in p and "Terms.docx: download failed (NETWORK_FAILED)" in p
+    assert "right_clicked" not in p
+    assert "say so in one line and stop" in H.SYSTEM_APPEND
+
+
+def test_effort_setting(tmp_path):
+    assert H.workspace_settings(tmp_path)["effort"] == "medium"
+    (tmp_path / "connections.yaml").write_text("browser:\n  effort: low\n", encoding="utf-8")
+    assert H.workspace_settings(tmp_path)["effort"] == "low"
+    (tmp_path / "connections.yaml").write_text("browser:\n  effort: ludicrous\n", encoding="utf-8")
+    st = H.workspace_settings(tmp_path)
+    assert st["effort"] == "medium" and st["problems"]
+
+
+def test_events_are_logged_under_the_run_id(store, caplog):
+    import logging
+    h, sent = _host(store)
+    h.run_id = "r-0badc0de"
+    with caplog.at_level(logging.INFO, logger="bizconnect.browser"):
+        h.emit({"type": "started", "session_id": "aed2cdf9-c4a3-4f53-b978-8253abe1083c", "model": "m",
+                "permission_mode": "auto"})
+        h.emit({"type": "text", "text": "not logged"})
+        h.emit({"type": "error", "text": "boom"})
+    assert sent[0]["run_id"] == "r-0badc0de"
+    lines = [r.getMessage() for r in caplog.records]
+    assert lines == ["[r-0badc0de] started session=aed2cdf9-c4a3-4f53-b978-8253abe1083c model=m mode=auto",
+                     "[r-0badc0de] error boom"]
+    assert H._short_url("https://mail.google.com/mail/u/0?ui=2&ik=SECRET#inbox") == "https://mail.google.com/mail/u/0"
+
+
+def test_trace_rebuilds_runs_and_reads_the_transcript(store, tmp_path, monkeypatch, capsys):
+    sid = "aed2cdf9-c4a3-4f53-b978-8253abe1083c"
+    log = store / "browser" / "host.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("\n".join([
+        "2026-10-13 11:40:58,001 25132 INFO host start pid=25132 args=[]",
+        "2026-10-13 11:40:59,002 25132 INFO [r-0badc0de] run start workspace=notion-bot url=https://mail.google.com/mail/u/0 item=- files=1 instruction=20 chars",
+        f"2026-10-13 11:41:01,003 25132 INFO [r-0badc0de] started session={sid} model=opus mode=auto",
+        f"2026-10-13 11:41:07,004 25132 INFO [r-0badc0de] result session={sid} success is_error=False turns=3 6.1s",
+        "2026-10-13 11:50:00,005 25200 INFO [r-11111111] run start workspace=notion-bot url=https://e.com/ item=- files=0 instruction=5 chars",
+        "2026-10-13 11:50:01,006 25200 WARNING [r-11111111] error Claude Code session failed: boom",
+    ]) + "\n", encoding="utf-8")
+    cdir = tmp_path / "claude"
+    proj = cdir / "projects" / "C--repo"
+    proj.mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cdir))
+    (proj / f"{sid}.jsonl").write_text("\n".join(json.dumps(x) for x in [
+        {"type": "user", "timestamp": "2026-10-13T10:41:01Z",
+         "message": {"content": "can you read this doc?\n\n<browser_context>\nurl: x\n</browser_context>"}},
+        {"type": "assistant", "timestamp": "2026-10-13T10:41:03Z",
+         "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "C:/f/a.pdf"}}]}},
+        {"type": "user", "timestamp": "2026-10-13T10:41:04Z",
+         "message": {"content": [{"type": "tool_result", "is_error": True, "content": "File not found"}]}},
+        {"type": "assistant", "timestamp": "2026-10-13T10:41:06Z",
+         "message": {"content": [{"type": "text", "text": "The file is gone."}]}},
+    ]) + "\n", encoding="utf-8")
+    runs = B.runs_from_log()
+    assert runs["r-0badc0de"]["session"] == sid and runs["r-0badc0de"]["outcome"] == "ok"
+    assert runs["r-11111111"]["outcome"].startswith("error: Claude Code session failed")
+    assert B.cmd_trace([]) == 0
+    listing = capsys.readouterr().out
+    assert "r-0badc0de" in listing and "r-11111111" in listing
+    assert B.cmd_trace([sid[:8]]) == 0
+    out = capsys.readouterr().out
+    assert "run r-0badc0de" in out and "you:    can you read this doc? (+ browser context)" in out
+    assert "tool:   Read C:/f/a.pdf" in out and "FAILED: File not found" in out
+    assert f"resume: claude --resume {sid}" in out
+    with pytest.raises(SystemExit):
+        B.cmd_trace(["r-99999999"])
+
+
+def test_panel_and_background_agree_on_file_links():
+    bg = (EXT / "background.js").read_text(encoding="utf-8")
+    pj = (EXT / "panel.js").read_text(encoding="utf-8")
+    pat = lambda js: js.split("const FILE_URL = ")[1].split(";")[0]
+    assert pat(bg) == pat(pj)
+    import re as _re
+    rx = _re.compile(pat(bg).strip("/").rsplit("/", 1)[0], _re.I)
+    assert rx.search("https://mail.google.com/mail/u/0?ui=2&ik=f6&attid=0.1&th=1a&view=att&disp=safe")
+    assert rx.search("https://e.com/a/report.PDF") and not rx.search("https://e.com/blog/post")

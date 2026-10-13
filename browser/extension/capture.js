@@ -114,7 +114,7 @@
     const label = host.getAttribute('aria-label') || host.getAttribute('title') || '';
     out.text = ((host.innerText || '').trim() || label).replace(/\s+/g, ' ').slice(0, 300);
     if (!out.name) out.name = fileNameFrom(`${label} ${out.text}`, out.url);
-    if (out.kind === 'link' && (out.name || /[?&]view=att\b/.test(out.url))) out.kind = 'file';
+    if (out.kind === 'link' && (out.name || /[?&](view=att|attid=)/.test(out.url))) out.kind = 'file';
     return out.url || out.text ? out : null;
   }
 
