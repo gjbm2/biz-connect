@@ -35,6 +35,8 @@ Verbs
                                                       pending suggestions as [+ins+] / [-del-]
   accept|reject <file|doc> (--all | <id>...) [--dry-run]
                                                       accept or reject pending suggestions
+  rows    <file|doc> --after <cell text> --row "A | B" [--row ...] [--suggest] [--dry-run]
+                                                      add rows to a table, below the row with <cell text>
   link  <file> <doc-url-or-id>                        bind an existing Doc to a local file
   status [file]                                       show drift (local vs last sync, + Doc mod time)
   list                                                list all bindings in this repo
@@ -1397,6 +1399,85 @@ def cmd_reject(argv):
     _resolve_suggestions(argv, "reject")
 
 
+def _cell_text(cell):
+    return " ".join(_para_text(c["paragraph"]).strip() for c in cell.get("content", []) if "paragraph" in c)
+
+
+def _plan_rows(tab, tab_id, anchor, rows):
+    """(requests, anchor row's cell texts) for one batchUpdate that adds `rows` (lists of
+    Markdown cell texts) to a body table, directly below the one row with a cell containing
+    `anchor`. New rows are inserted empty, then filled from the highest index down, so no
+    insertion shifts a cell still to be filled. Row layout: row start R, cell k's paragraph
+    at R + 2 + 2k, row width 1 + 2 * columns."""
+    a = _match_key(anchor or "")
+    if not a:
+        sys.exit("the anchor text is empty")
+    hits = []
+    for el in tab.get("body", {}).get("content", []):
+        for r, row in enumerate((el.get("table") or {}).get("tableRows", [])):
+            if any(a in _match_key(_cell_text(c)) for c in row.get("tableCells", [])):
+                hits.append((el, r, row))
+    if len(hits) != 1:
+        sys.exit(f"anchor {anchor!r} is in {len(hits)} table rows; it must pick out exactly one")
+    el, r, row = hits[0]
+    ncols = el["table"]["columns"]
+    for cells in rows:
+        if len(cells) != ncols:
+            sys.exit(f"each --row needs {ncols} cells separated by ' | '; got {len(cells)}: {cells!r}")
+    existing = {_match_key(_cell_text(rw["tableCells"][0])) for rw in el["table"]["tableRows"]}
+    dup = [c[0] for c in rows if _match_key(_md_inline(c[0])[0]) in existing]
+    if dup:
+        sys.exit(f"already in the table: {dup[0]!r}. Nothing was written (added before?).")
+
+    def where(d):
+        return {**d, "tabId": tab_id} if tab_id else d
+
+    start = where({"index": el["startIndex"]})
+    reqs = [{"insertTableRow": {"tableCellLocation": {"tableStartLocation": start, "rowIndex": r,
+                                                      "columnIndex": 0}, "insertBelow": True}}
+            for _ in rows]
+    # each column's text style, from the anchor row (bold only where that whole cell is bold)
+    base = []
+    for cell in row["tableCells"]:
+        runs = [e["textRun"] for c in cell.get("content", []) if "paragraph" in c
+                for e in c["paragraph"].get("elements", []) if e.get("textRun", {}).get("content", "").strip()]
+        st = {k: v for k, v in (runs[0].get("textStyle", {}) if runs else {}).items() if k in _BASE_TEXT}
+        if runs and all(x.get("textStyle", {}).get("bold") for x in runs):
+            st["bold"] = True
+        base.append(st)
+    width, first = 1 + 2 * ncols, row["endIndex"]
+    for j in reversed(range(len(rows))):
+        for k in reversed(range(ncols)):
+            text, spans = _md_inline(rows[j][k].strip())
+            if not text:
+                continue
+            at = first + j * width + 2 + 2 * k
+            reqs.append({"insertText": {"location": where({"index": at}), "text": text}})
+            reqs.append({"updateTextStyle": {"range": where({"startIndex": at, "endIndex": at + _u16(text)}),
+                                             "textStyle": base[k], "fields": ",".join(TEXT_FIELDS)}})
+            for s, z, style in spans:
+                reqs.append({"updateTextStyle": {"range": where({"startIndex": at + s, "endIndex": at + z}),
+                                                 "textStyle": style, "fields": ",".join(style)}})
+    return reqs, [_cell_text(c) for c in row["tableCells"]]
+
+
+def cmd_rows(argv):
+    values = {i + 1 for i, a in enumerate(argv) if a in ("--after", "--row")}
+    pos = next((a for i, a in enumerate(argv) if i not in values and not a.startswith("--")), None)
+    anchor = _opt(argv, "--after")
+    rows = [argv[i + 1].split(" | ") for i, a in enumerate(argv[:-1]) if a == "--row"]
+    if not pos or not anchor or not rows:
+        sys.exit('rows needs <file|doc-url> --after "<text in a table row>" --row "A | B" [--row ...]')
+    data, doc_id, label = _edit_target(pos)
+    docs = _docs(data)
+    d, tab, tab_id = _fetch_doc(docs, doc_id)
+    reqs, anchor_cells = _plan_rows(tab, tab_id, anchor, rows)
+    suggest = "--suggest" in argv
+    _send_edit(docs, doc_id, d["revisionId"], reqs, "--dry-run" in argv,
+               f"{'suggested' if suggest else 'added'} {len(rows)} table row(s) below "
+               f"{anchor_cells[0][:50]!r} in {label}", suggest=suggest)
+
+
 def cmd_delete(argv):
     pos = [a for a in argv if a not in ("--dry-run", "--suggest")]
     if len(pos) != 2 or not pos[1]:
@@ -1535,7 +1616,7 @@ VERBS = {
     "status": cmd_status, "list": cmd_list,
     "comments": cmd_comments, "annotate": cmd_annotate, "diff": cmd_diff, "resolve": cmd_resolve,
     "docx": cmd_docx, "read": cmd_read, "insert": cmd_insert, "replace": cmd_replace,
-    "delete": cmd_delete, "accept": cmd_accept, "reject": cmd_reject,
+    "delete": cmd_delete, "accept": cmd_accept, "reject": cmd_reject, "rows": cmd_rows,
 }
 
 

@@ -75,6 +75,7 @@ bizconnect gdoc insert  <file|doc-url> --after  "<anchor text>" --from snippet.m
 bizconnect gdoc insert  <file|doc-url> --before "<anchor text>" --md "**One paragraph.**"
 bizconnect gdoc replace <file|doc-url> "<exact text in the Doc>" "<new text>"
 bizconnect gdoc delete  <file|doc-url> "<anchor text>"
+bizconnect gdoc rows    <file|doc-url> --after "<text in a table row>" --row "Cell A | Cell B" [--row ...]
 # each takes --suggest (write as suggestions) and --dry-run (print the requests, send nothing)
 ```
 
@@ -89,6 +90,9 @@ bizconnect gdoc delete  <file|doc-url> "<anchor text>"
   Doc's own characters (it says so if quotes or dashes differ) and lengthen the text until it is
   unique. Keep the find text within one style (e.g. the words after a bold label): the new text
   takes a single style.
+- **rows** adds rows to an existing table, below the one row that has a cell containing the
+  anchor; give one `--row` per new row, cells separated by ` | ` (Markdown bold, italic and
+  links work). To add to a table, use this; never start a second table or list instead.
 - **delete** removes the one whole paragraph that contains the anchor. It can't remove the
   Doc's last paragraph or the line just before a table; `replace` their text instead.
 - Each call is **one guarded write**: if anyone edits the Doc between the read and the write,

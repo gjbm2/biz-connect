@@ -495,3 +495,60 @@ def test_read_ids_shows_suggestion_ids(fake, capsys):
     G.cmd_read([URL, "--ids"])
     out = capsys.readouterr().out
     assert "[-Was-]{s.del}[+ now+]{s.ins}" in out and "4 pending suggestion(s)" in out
+
+
+# ------------------------------------------------------------------ rows
+def table_doc():
+    """A doc whose body holds an intro paragraph and a 2-column table (header + 2 rows), with
+    the index layout Google uses: row start R, cell k's paragraph at R + 2 + 2k."""
+    content = [{"startIndex": 0, "endIndex": 1, "sectionBreak": {}},
+               {"startIndex": 1, "endIndex": 7, "paragraph": {"elements": [
+                   {"startIndex": 1, "endIndex": 7, "textRun": {"content": "Intro\n", "textStyle": {}}}],
+                   "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"}}}]
+    rows, idx = [], 8
+    for cells in (["Exhibit", "What it shows"], ["Growth", "Households by month"], ["Team", "Headcount"]):
+        start, tcells = idx, []
+        idx += 1
+        for c in cells:
+            text = c + "\n"
+            tcells.append({"startIndex": idx, "endIndex": idx + 1 + len(text), "content": [
+                {"startIndex": idx + 1, "endIndex": idx + 1 + len(text), "paragraph": {"elements": [
+                    {"startIndex": idx + 1, "endIndex": idx + 1 + len(text),
+                     "textRun": {"content": text, "textStyle": {}}}]}}]})
+            idx += 1 + len(text)
+        rows.append({"startIndex": start, "endIndex": idx, "tableCells": tcells})
+    content.append({"startIndex": 7, "endIndex": idx + 1, "table": {"rows": 3, "columns": 2, "tableRows": rows}})
+    return {"documentId": "DOC", "revisionId": "rev-1",
+            "tabs": [{"tabProperties": {"tabId": "t.0"}, "documentTab": {"body": {"content": content}}}]}
+
+
+def test_rows_inserts_below_anchor_and_fills_from_the_bottom(fake):
+    fake.doc = table_doc()
+    growth_end = fake.doc["tabs"][0]["documentTab"]["body"]["content"][2]["table"]["tableRows"][1]["endIndex"]
+    G.cmd_rows([URL, "--after", "Households by month", "--row", "Hiring | Funnel by role",
+                "--row", "**Org** chart | Who manages whom", "--suggest"])
+    (body,) = fake.sent
+    reqs = body["requests"]
+    assert body["writeControl"]["writeMode"] == "SUGGEST"
+    ins_rows = [r["insertTableRow"] for r in reqs if "insertTableRow" in r]
+    assert len(ins_rows) == 2 and all(x["tableCellLocation"]["rowIndex"] == 1 and x["insertBelow"]
+                                      and x["tableCellLocation"]["tableStartLocation"] == {"index": 7, "tabId": "t.0"}
+                                      for x in ins_rows)
+    texts = [(r["insertText"]["location"]["index"], r["insertText"]["text"]) for r in reqs if "insertText" in r]
+    w = 1 + 2 * 2
+    assert texts == [(growth_end + w + 4, "Who manages whom"), (growth_end + w + 2, "Org chart"),
+                     (growth_end + 4, "Funnel by role"), (growth_end + 2, "Hiring")]
+    bold = [r["updateTextStyle"] for r in reqs if r.get("updateTextStyle", {}).get("textStyle") == {"bold": True}]
+    assert bold == [{"range": {"startIndex": growth_end + w + 2, "endIndex": growth_end + w + 5, "tabId": "t.0"},
+                     "textStyle": {"bold": True}, "fields": "bold"}]
+
+
+def test_rows_refuses_wrong_width_duplicates_and_ambiguous_anchor(fake):
+    fake.doc = table_doc()
+    with pytest.raises(SystemExit, match="needs 2 cells"):
+        G.cmd_rows([URL, "--after", "Growth", "--row", "Only one cell"])
+    with pytest.raises(SystemExit, match="already in the table"):
+        G.cmd_rows([URL, "--after", "Growth", "--row", "Team | again"])
+    with pytest.raises(SystemExit, match="3 table rows"):
+        G.cmd_rows([URL, "--after", "h", "--row", "A | B"])          # in Exhibit/What it shows/Growth/... rows
+    assert fake.sent == []
