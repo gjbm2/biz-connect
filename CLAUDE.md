@@ -69,6 +69,7 @@ bizconnect init      # writes connections.yaml + .gitignore guards
 
 ```bash
 bizconnect gdoc    push|pull|status|link <file.md>          # local Markdown <-> Google Doc
+bizconnect gdoc    insert|replace <file|doc-url> ...        # edit one passage of a Doc in place
 bizconnect notion  link|map|outline|locate|diff <args>      # set up / inspect a folder's Notion mapping (notion.yaml)
 bizconnect notion  status|pull|push [<folder or file>]      # two-way file <-> Notion sync
 bizconnect notion  whoami|check|read|upload|fill <page|.>   # . = this repo's notion.notes_page

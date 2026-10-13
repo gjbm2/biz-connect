@@ -13,11 +13,19 @@ the Doc's last-synced modifiedTime, timestamps) lives in a tool-owned, git-ignor
 Both directions are guarded against clobbering: `pull` refuses to overwrite local
 edits and `push` refuses to overwrite Doc-side edits — pass `--force` to override.
 
+`push` replaces the Doc's whole body (a fresh Markdown import). For a Doc that people
+edit, use the passage verbs instead: `insert` and `replace` change one passage through
+the Docs API and leave everything else (formatting, comments, other text) untouched.
+
 Verbs
 -----
   push  <file> [--title T] [--folder ID] [--version V] [--new] [--force]   create/update the Doc
                                                      (--new = a NEW Doc instance for a major build)
   pull  <file> [--force]                              overwrite local Markdown from the Doc
+  insert  <file|doc> (--before|--after) <anchor> (--md M | --from F) [--dry-run]
+                                                      add Markdown paragraphs next to the one
+                                                      paragraph containing <anchor>, in place
+  replace <file|doc> <find> <with> [--dry-run]        replace text that occurs exactly once, in place
   link  <file> <doc-url-or-id>                        bind an existing Doc to a local file
   status [file]                                       show drift (local vs last sync, + Doc mod time)
   list                                                list all bindings in this repo
@@ -92,6 +100,40 @@ def _modified(drive, doc_id):
                                  supportsAllDrives=True).execute().get("modifiedTime")
     except Exception:
         return None
+
+
+def _export_md(drive, doc_id) -> bytes:
+    content = drive.files().export(fileId=doc_id, mimeType=MD_MIME).execute()
+    return content.encode("utf-8") if isinstance(content, str) else content
+
+
+def _baseline_sha(st):
+    """Content hash of the Doc's export at the last sync, or None if unknown."""
+    if st.get("synced_doc_sha256"):
+        return st["synced_doc_sha256"]
+    # state written before synced_doc_sha256 existed: a pulled file IS the Doc's export
+    if st.get("last_pull_sha256") and st.get("last_pull_at", "") > st.get("last_push_at", ""):
+        return st["last_pull_sha256"]
+    return None
+
+
+def _doc_changed(drive, doc_id, st, current=None):
+    """True if the Doc was edited since the last sync. Drive's modifiedTime alone is not
+    reliable for a Google Doc (it can move, even backwards, with no edit), so a differing
+    time is confirmed against the content of the Doc's export."""
+    synced = st.get("synced_modified")
+    if not synced:
+        return False
+    current = current or _modified(drive, doc_id)
+    if not current or current == synced:
+        return False
+    base = _baseline_sha(st)
+    if not base:
+        return True
+    try:
+        return _content_sha(_export_md(drive, doc_id)) != base
+    except Exception:
+        return True
 
 
 def _git_sha(root):
@@ -240,7 +282,7 @@ def cmd_push(argv):
             # guard: don't clobber edits made to the Doc since we last synced it
             if not force and st.get("synced_modified"):
                 current = _modified(drive, doc_id)
-                if current and current != st["synced_modified"]:
+                if _doc_changed(drive, doc_id, st, current):
                     sys.exit(
                         f"the Google Doc bound to {key} changed since the last sync "
                         f"(modified {current}).\nPushing would overwrite those edits. "
@@ -275,12 +317,18 @@ def cmd_push(argv):
     url = f.get("webViewLink") or f"https://docs.google.com/document/d/{doc_id}/edit"
     # Re-fetch modifiedTime AFTER create+share (sharing bumps it), so the drift guard
     # and `status` don't see a phantom "doc changed" on the very next call.
+    synced_modified = _modified(drive, doc_id) or f.get("modifiedTime")
+    try:
+        doc_sha = _content_sha(_export_md(drive, doc_id))
+    except Exception:
+        doc_sha = None
     state.setdefault("docs", {})[key] = {
         **st, "doc_id": doc_id,
         "version": version or st.get("version"),
         "last_push_sha256": _content_sha(md),
         "last_push_at": _now(),
-        "synced_modified": _modified(drive, doc_id) or f.get("modifiedTime"),
+        "synced_modified": synced_modified,
+        "synced_doc_sha256": doc_sha,
     }
     _save_state(root, state)
     print(f"{action} Google Doc from {key}")
@@ -339,19 +387,22 @@ def cmd_pull(argv):
                      f"Push first, or re-run with --force to discard local changes.")
 
     drive = _drive(data)
+    # Read the time BEFORE exporting: an edit landing in between then shows up as a change.
+    synced_modified = _modified(drive, doc_id)
     try:
-        content = drive.files().export(fileId=doc_id, mimeType=MD_MIME).execute()
+        content = _export_md(drive, doc_id)
     except Exception as e:
         _die_google(e, doc_id)
-    if isinstance(content, str):
-        content = content.encode("utf-8")
 
     local.parent.mkdir(parents=True, exist_ok=True)
     local.write_bytes(content)
+    # The pulled content is the sync baseline: a later push is refused only if the Doc's
+    # content has moved on from it, so pull, edit, push needs no --force.
     state.setdefault("docs", {})[key] = {
         **st, "doc_id": doc_id,
         "last_pull_sha256": _content_sha(content), "last_pull_at": _now(),
-        "synced_modified": _modified(drive, doc_id),
+        "synced_modified": synced_modified,
+        "synced_doc_sha256": _content_sha(content),
     }
     _save_state(root, state)
     print(f"pulled Doc -> {key} ({len(content)} bytes)")
@@ -425,7 +476,7 @@ def cmd_status(argv):
             try:
                 drive = drive or _drive(data)
                 modified = _modified(drive, doc_id) or ""
-                if modified and st.get("synced_modified") and modified != st["synced_modified"]:
+                if modified and _doc_changed(drive, doc_id, st, modified):
                     flags.append("DOC CHANGED since last sync")
             except Exception as e:
                 status, _ = _google.http_error(e)
@@ -804,6 +855,374 @@ def cmd_annotate(argv):
           + (f", {failed} failed" if failed else ""))
 
 
+# ------------------------------------------- passage edits (insert / replace, in place)
+# `push` re-imports the whole body, which resets the formatting of a Doc that people edit.
+# These verbs change one passage through the Docs API and leave the rest alone. Each is ONE
+# batchUpdate guarded by writeControl.requiredRevisionId: if anyone edits the Doc between our
+# read and our write, Google rejects it and nothing is written. A new paragraph copies the
+# paragraph and text style of the nearest existing paragraph of the same kind, so it matches
+# the Doc's own look rather than the Markdown importer's defaults.
+PARA_FIELDS = ("namedStyleType", "alignment", "lineSpacing", "direction", "spacingMode",
+               "spaceAbove", "spaceBelow", "indentFirstLine", "indentStart", "indentEnd",
+               "keepLinesTogether", "keepWithNext", "avoidWidowAndOrphan")
+TEXT_FIELDS = ("bold", "italic", "underline", "strikethrough", "smallCaps", "backgroundColor",
+               "foregroundColor", "fontSize", "weightedFontFamily", "baselineOffset", "link")
+_BASE_TEXT = ("underline", "strikethrough", "smallCaps", "backgroundColor", "foregroundColor",
+              "fontSize", "weightedFontFamily", "baselineOffset")
+_DIMENSIONS = ("spaceAbove", "spaceBelow", "indentFirstLine", "indentStart", "indentEnd")
+_MD_ESCAPABLE = set("\\`*_{}[]()#+-.!|$&<>~\"'")
+_LINK = re.compile(r"\[((?:\\.|[^\]\\])+)\]\(([^)\s]+)\)")
+
+
+def _u16(s):
+    """Length in UTF-16 code units: the unit of every Docs API index."""
+    return len(s.encode("utf-16-le")) // 2
+
+
+def _md_inline(s):
+    """Markdown inline text -> (plain text, spans), spans being (start, end, textStyle) in
+    UTF-16 units. Handles **bold**, *italic*, [links](url) and backslash escapes; anything
+    else stays literal."""
+    out, spans = [], []
+    pos = 0
+    opened = {}                                    # "bold"/"italic" -> start offset
+    i, n = 0, len(s)
+
+    def toggle(name):
+        if name in opened:
+            a = opened.pop(name)
+            if pos > a:
+                spans.append((a, pos, {name: True}))
+        else:
+            opened[name] = pos
+
+    while i < n:
+        c = s[i]
+        if c == "\\" and i + 1 < n and s[i + 1] in _MD_ESCAPABLE:
+            out.append(s[i + 1]); pos += _u16(s[i + 1]); i += 2
+            continue
+        if s.startswith("**", i):
+            toggle("bold"); i += 2
+            continue
+        if c == "*":
+            toggle("italic"); i += 1
+            continue
+        if c == "[":
+            m = _LINK.match(s, i)
+            if m:
+                text, sub = _md_inline(m.group(1))
+                spans.extend((a + pos, b + pos, st) for a, b, st in sub)
+                spans.append((pos, pos + _u16(text), {"link": {"url": m.group(2)}}))
+                out.append(text); pos += _u16(text); i = m.end()
+                continue
+        out.append(c); pos += _u16(c); i += 1
+    for name in list(opened):                      # unclosed: runs to the end
+        toggle(name)
+    return "".join(out), spans
+
+
+def _md_blocks(md):
+    """Markdown -> one block per paragraph: [{"kind": "heading"|"para"|"bullet", "level",
+    "text", "spans"}]. A leading '> ' is dropped (Drive's export quotes indented lists).
+    Refuses what it can't place faithfully: tables, numbered or nested lists, code, images."""
+    blocks, cur = [], None
+
+    def flush():
+        nonlocal cur
+        if cur:
+            text, spans = _md_inline(" ".join(cur[2]))
+            blocks.append({"kind": cur[0], "level": cur[1], "text": text, "spans": spans})
+        cur = None
+
+    for raw in md.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw.rstrip()
+        while line.lstrip().startswith(">"):
+            line = line.lstrip()[1:]
+        if not line.strip():
+            flush()
+            continue
+        s = line.strip()
+        indented = len(line) - len(line.lstrip()) >= 2
+        bad = ("a table" if s.startswith("|") else "a code block" if s.startswith("```")
+               else "an image" if s.startswith("![") else "a numbered list item" if re.match(r"\d+[.)]\s", s)
+               else "a horizontal rule" if re.fullmatch(r"(\*\s*){3,}|(-\s*){3,}|(_\s*){3,}", s)
+               else "a nested list item" if indented and re.match(r"[*+-]\s", s) else None)
+        if bad:
+            sys.exit(f"insert can't place {bad} ({s[:40]!r}); headings, paragraphs and "
+                     f"top-level bullets only")
+        h = re.match(r"(#{1,6})\s+(.*?)\s*#*$", s)
+        b = re.match(r"[*+-]\s+(.*)", s)
+        if h:
+            flush()
+            cur = ("heading", len(h.group(1)), [h.group(2)])
+            flush()
+        elif b:
+            flush()
+            cur = ("bullet", 0, [b.group(1)])
+        elif cur:                                  # continuation of a paragraph or bullet
+            cur[2].append(s)
+        else:
+            cur = ("para", 0, [s])
+    flush()
+    return blocks
+
+
+def _para_text(p):
+    return "".join(e.get("textRun", {}).get("content", "") for e in p.get("elements", []))
+
+
+def _tight(el):
+    """True if a paragraph followed by `el` sits flush against it (a list or a table)."""
+    return bool(el) and ("table" in el or bool(el.get("paragraph", {}).get("bullet")))
+
+
+def _body_paras(tab):
+    """Top-level body paragraphs, with what a new paragraph next to one needs to know."""
+    els = [e for e in tab.get("body", {}).get("content", []) if "paragraph" in e or "table" in e]
+    out = []
+    for i, el in enumerate(els):
+        if "paragraph" not in el:
+            continue
+        p = el["paragraph"]
+        out.append({"start": el["startIndex"], "end": el["endIndex"], "text": _para_text(p),
+                    "style": p.get("paragraphStyle", {}), "bullet": bool(p.get("bullet")),
+                    "runs": [e["textRun"] for e in p.get("elements", []) if "textRun" in e],
+                    "tight": _tight(els[i + 1] if i + 1 < len(els) else None)})
+    return out
+
+
+def _all_texts(tab):
+    """Every paragraph's text in a tab: body (tables included), headers, footers, footnotes."""
+    out = []
+
+    def walk(content):
+        for el in content or []:
+            if "paragraph" in el:
+                out.append(_para_text(el["paragraph"]))
+            elif "table" in el:
+                for row in el["table"].get("tableRows", []):
+                    for cell in row.get("tableCells", []):
+                        walk(cell.get("content"))
+            elif "tableOfContents" in el:
+                walk(el["tableOfContents"].get("content"))
+    walk(tab.get("body", {}).get("content"))
+    for group in ("headers", "footers", "footnotes"):
+        for seg in (tab.get(group) or {}).values():
+            walk(seg.get("content"))
+    return out
+
+
+def _match_key(s):
+    return re.sub(r"\s+", " ", _norm_for_match(s)).strip().lower()
+
+
+def _find_anchor(paras, anchor):
+    a = _match_key(anchor or "")
+    if not a:
+        sys.exit("the anchor text is empty")
+    hits = [p for p in paras if a in _match_key(p["text"])]
+    if len(hits) != 1:
+        found = "; ".join(repr(p["text"].strip()[:60]) for p in hits[:5])
+        sys.exit(f"anchor {anchor!r} is in {len(hits)} paragraphs; it must pick out exactly one"
+                 + (f": {found}" if hits else " (table cells are not searched)"))
+    return hits[0]
+
+
+def _kind(block):
+    if block["kind"] == "heading":
+        return (f"HEADING_{block['level']}", False)
+    return ("NORMAL_TEXT", block["kind"] == "bullet")
+
+
+def _template(paras, kind, tight, near):
+    """The existing paragraph a new one should look like: same named style and bullet-ness,
+    preferring the same spacing context (flush before a list or table, or not), nearest first."""
+    same = [p for p in paras
+            if (p["style"].get("namedStyleType", "NORMAL_TEXT"), p["bullet"]) == kind]
+    pool = [p for p in same if p["tight"] == tight] or same
+    return min(pool, key=lambda p: abs(p["start"] - near)) if pool else None
+
+
+def _para_style(tpl, named):
+    st = {}
+    for f in PARA_FIELDS:
+        v = (tpl["style"] if tpl else {}).get(f)
+        if v is None:
+            continue
+        if f in _DIMENSIONS and isinstance(v, dict):    # an explicit zero comes back bare
+            v = {"magnitude": v.get("magnitude", 0), "unit": v.get("unit", "PT")}
+        st[f] = v
+    st["namedStyleType"] = named
+    return st
+
+
+def _base_text(tpl):
+    """The text style a new paragraph starts from: its template's plain (non-bold) run,
+    without the emphasis and links that the Markdown sets explicitly."""
+    runs = tpl["runs"] if tpl else []
+    if not runs:
+        return {}
+    run = next((r for r in runs if not r.get("textStyle", {}).get("bold")), runs[0])
+    ts = run.get("textStyle", {})
+    return {k: ts[k] for k in _BASE_TEXT if k in ts}
+
+
+def _plan_insert(tab, tab_id, blocks, anchor, after):
+    """(requests, anchor paragraph) for one batchUpdate that inserts `blocks` as new
+    paragraphs before or after the one paragraph containing `anchor`."""
+    paras = _body_paras(tab)
+    p = _find_anchor(paras, anchor)
+    existing = {_match_key(q["text"]) for q in paras}
+    dup = [b["text"] for b in blocks if _match_key(b["text"]) in existing]
+    if dup:
+        sys.exit(f"already in the Doc: {dup[0][:60]!r}. Nothing was written (inserted before?).")
+
+    def where(d):
+        return {**d, "tabId": tab_id} if tab_id else d
+
+    texts = [b["text"] for b in blocks]
+    if after:                      # split the anchor at its end: new paragraphs follow it
+        at, first, payload = p["end"] - 1, p["end"], "".join("\n" + t for t in texts)
+        last_tight = p["tight"]
+    else:                          # new paragraphs go in front of the anchor
+        at, first, payload = p["start"], p["start"], "".join(t + "\n" for t in texts)
+        last_tight = p["bullet"]
+    starts, s = [], first
+    for t in texts:
+        starts.append(s)
+        s += _u16(t) + 1
+
+    def span(k, j=None):           # paragraph k, or k..j inclusive, newline included
+        j = k if j is None else j
+        return where({"startIndex": starts[k], "endIndex": starts[j] + _u16(texts[j]) + 1})
+
+    reqs = [{"insertText": {"location": where({"index": at}), "text": payload}}]
+    # New paragraphs inherit the anchor's bullet; add or remove bullets where they differ.
+    k = 0
+    while k < len(blocks):
+        want = blocks[k]["kind"] == "bullet"
+        j = k
+        while j + 1 < len(blocks) and (blocks[j + 1]["kind"] == "bullet") == want:
+            j += 1
+        if want != p["bullet"]:
+            reqs.append({"createParagraphBullets": {"range": span(k, j),
+                                                    "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"}}
+                        if want else {"deleteParagraphBullets": {"range": span(k, j)}})
+        k = j + 1
+    for k, b in enumerate(blocks):
+        kind = _kind(b)
+        tight = (blocks[k + 1]["kind"] == "bullet") if k + 1 < len(blocks) else last_tight
+        tpl = _template(paras, kind, tight, at)
+        reqs.append({"updateParagraphStyle": {"range": span(k),
+                                              "paragraphStyle": _para_style(tpl, kind[0]),
+                                              "fields": ",".join(PARA_FIELDS)}})
+        reqs.append({"updateTextStyle": {"range": span(k), "textStyle": _base_text(tpl),
+                                         "fields": ",".join(TEXT_FIELDS)}})
+        for a, z, style in b["spans"]:
+            reqs.append({"updateTextStyle": {
+                "range": where({"startIndex": starts[k] + a, "endIndex": starts[k] + z}),
+                "textStyle": style, "fields": ",".join(style)}})
+    return reqs, p
+
+
+def _edit_target(arg):
+    """(connections data or None, doc id, label) for a passage edit: a Doc URL or id, or a
+    local file bound to a Doc in connections.yaml."""
+    if re.search(r"docs\.google\.com|drive\.google\.com", arg) or (
+            re.fullmatch(r"[A-Za-z0-9_-]{25,}", arg) and not _resolve_local(arg).exists()):
+        return None, _doc_id_from(arg), arg
+    data, conn_path, root = _repo()
+    key = _rel(_resolve_local(arg), root)
+    b = _binding(data, key)
+    if not b or not b.get("doc_id"):
+        sys.exit(f"no Doc bound to {key}. Pass the Doc's URL instead, or `gdoc link` it first.")
+    return data, b["doc_id"], key
+
+
+def _fetch_doc(docs, doc_id):
+    """(document, first tab's content, tab id). Passage edits work on the first tab."""
+    try:
+        d = docs.documents().get(documentId=doc_id, includeTabsContent=True).execute()
+    except Exception as e:
+        _die_google(e, doc_id)
+    tabs = d.get("tabs") or []
+    if tabs:
+        return d, tabs[0].get("documentTab", {}), tabs[0].get("tabProperties", {}).get("tabId")
+    return d, d, None
+
+
+def _send_edit(docs, doc_id, rev, requests, dry, done):
+    body = {"requests": requests, "writeControl": {"requiredRevisionId": rev}}
+    if dry:
+        print(json.dumps(body, indent=1, ensure_ascii=False))
+        print(f"-- dry run: {len(requests)} request(s), nothing sent", file=sys.stderr)
+        return None
+    try:
+        # no retry: a write whose outcome is unknown is reported, not repeated
+        resp = docs.documents().batchUpdate(documentId=doc_id, body=body).execute()
+    except Exception as e:
+        status, detail = _google.http_error(e)
+        if str(status) == "400" and "revision" in (detail or "").lower():
+            sys.exit(f"REVISION MISMATCH [{status}]: the Doc changed after it was read (someone "
+                     f"is editing it). Nothing was written. Re-run to read it afresh.")
+        if str(status) not in ("400", "401", "403", "404"):
+            print("This write may or may not have been applied. Look at the Doc before re-running "
+                  "(insert and replace refuse to apply twice).")
+        _die_google(e, doc_id)
+    print(done)
+    return resp
+
+
+def cmd_insert(argv):
+    arg = _positional(argv, value_flags=("--before", "--after", "--md", "--from"))
+    before, after = _opt(argv, "--before"), _opt(argv, "--after")
+    if not arg or bool(before) == bool(after):
+        sys.exit("insert needs <file|doc-url> and one of --before/--after <anchor text>")
+    md, src = _opt(argv, "--md"), _opt(argv, "--from")
+    if (md is None) == (src is None):
+        sys.exit("insert needs --md <markdown> or --from <file.md>")
+    if src:
+        md = _resolve_local(src).read_text(encoding="utf-8")
+    blocks = _md_blocks(md)
+    if not blocks:
+        sys.exit("nothing to insert")
+    data, doc_id, label = _edit_target(arg)
+    docs = _docs(data)
+    d, tab, tab_id = _fetch_doc(docs, doc_id)
+    reqs, p = _plan_insert(tab, tab_id, blocks, before or after, after=bool(after))
+    _send_edit(docs, doc_id, d["revisionId"], reqs, "--dry-run" in argv,
+               f"inserted {len(blocks)} paragraph(s) {'after' if after else 'before'} "
+               f"{p['text'].strip()[:50]!r} in {label}")
+
+
+def cmd_replace(argv):
+    pos = [a for a in argv if a != "--dry-run"]
+    if len(pos) != 3 or not pos[1]:
+        sys.exit("replace needs <file|doc-url> <find> <with>")
+    arg, find, new = pos
+    data, doc_id, label = _edit_target(arg)
+    docs = _docs(data)
+    d, tab, tab_id = _fetch_doc(docs, doc_id)
+    texts = _all_texts(tab)
+    n = sum(t.count(find) for t in texts)
+    if n == 0 and new and any(new in t for t in texts):
+        sys.exit(f"{new!r} is already in the Doc and {find!r} is not. Nothing was written "
+                 f"(replaced before?).")
+    if n != 1:
+        near = [t for t in texts if _match_key(find) in _match_key(t)] if n == 0 else []
+        sys.exit(f"{find!r} occurs {n} times in the Doc; replace needs exactly one. Nothing was "
+                 f"written." + (f"\nThe Doc has it with different characters (quotes, dashes or "
+                                f"spaces): {near[0].strip()[:120]!r}" if near else
+                                "" if n == 0 else " Lengthen it until it is unique."))
+    if find in new and any(new in t for t in texts):
+        sys.exit(f"{new!r} is already in the Doc. Nothing was written (replaced before?).")
+    req = {"containsText": {"text": find, "matchCase": True}, "replaceText": new}
+    if tab_id:
+        req["tabsCriteria"] = {"tabIds": [tab_id]}
+    _send_edit(docs, doc_id, d["revisionId"], [{"replaceAllText": req}], "--dry-run" in argv,
+               f"replaced 1 occurrence in {label}")
+
+
 def _refresh_live_word_doc(target: Path, content: bytes, save: bool) -> bool:
     """The target .docx is write-locked because it is OPEN in Word. Instead of
     failing, refresh the OPEN document's content in place via COM (Windows only):
@@ -926,7 +1345,7 @@ VERBS = {
     "push": cmd_push, "pull": cmd_pull, "link": cmd_link, "unlink": cmd_unlink,
     "status": cmd_status, "list": cmd_list,
     "comments": cmd_comments, "annotate": cmd_annotate, "diff": cmd_diff, "resolve": cmd_resolve,
-    "docx": cmd_docx,
+    "docx": cmd_docx, "insert": cmd_insert, "replace": cmd_replace,
 }
 
 
