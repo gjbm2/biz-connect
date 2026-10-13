@@ -27,8 +27,13 @@ repo's `connections.yaml` under `google.docs`, filled in automatically on first 
 bizconnect gdoc insert <file|doc-url> --after  "<anchor text>" --from snippet.md
 bizconnect gdoc insert <file|doc-url> --before "<anchor text>" --md "**One paragraph.**"
 bizconnect gdoc replace <file|doc-url> "<exact text in the Doc>" "<new text>"
-# add --dry-run to print the planned requests and send nothing
+# add --suggest to write the edit as suggestions; --dry-run prints the requests and sends nothing
 ```
+
+- **`--suggest`** writes the edit as Google Docs suggestions (Suggesting mode) instead of
+  changing the text: the Doc's editors see each one marked up and accept or reject it in the
+  Doc. Use it whenever the user wants to review edits before they land. Suggestions show under
+  the name of the account biz-connect acts as (the impersonated user, if delegation is set).
 
 - **Read first:** `gdoc pull` (bound file) or `gdoc diff`, so you edit against the Doc as it is.
 - **insert** places Markdown paragraphs before or after the one paragraph that contains the
@@ -43,6 +48,8 @@ bizconnect gdoc replace <file|doc-url> "<exact text in the Doc>" "<new text>"
 - Both are **one guarded write**: if anyone edits the Doc between the read and the write,
   nothing is written ("REVISION MISMATCH"): re-run. Both refuse to apply the same edit twice.
 - Several edits are several calls; check the result with `gdoc diff` at the end.
+- With `--suggest`, nothing changes until someone accepts; a re-run is still refused (pending
+  suggestions count as applied).
 - Passage edits change the Doc only. To bring a bound local file level with it afterwards,
   `gdoc pull` (with `--force` once you have checked that the diff shows only your edits).
 

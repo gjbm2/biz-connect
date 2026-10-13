@@ -22,10 +22,12 @@ Verbs
   push  <file> [--title T] [--folder ID] [--version V] [--new] [--force]   create/update the Doc
                                                      (--new = a NEW Doc instance for a major build)
   pull  <file> [--force]                              overwrite local Markdown from the Doc
-  insert  <file|doc> (--before|--after) <anchor> (--md M | --from F) [--dry-run]
+  insert  <file|doc> (--before|--after) <anchor> (--md M | --from F) [--suggest] [--dry-run]
                                                       add Markdown paragraphs next to the one
                                                       paragraph containing <anchor>, in place
-  replace <file|doc> <find> <with> [--dry-run]        replace text that occurs exactly once, in place
+  replace <file|doc> <find> <with> [--suggest] [--dry-run]
+                                                      replace text that occurs exactly once, in place
+                                                      (--suggest: write as suggestions to accept/reject)
   link  <file> <doc-url-or-id>                        bind an existing Doc to a local file
   status [file]                                       show drift (local vs last sync, + Doc mod time)
   list                                                list all bindings in this repo
@@ -967,8 +969,10 @@ def _md_blocks(md):
     return blocks
 
 
-def _para_text(p):
-    return "".join(e.get("textRun", {}).get("content", "") for e in p.get("elements", []))
+def _para_text(p, accepted=False):
+    """A paragraph's text. accepted=True leaves out text a pending suggestion deletes."""
+    return "".join(e.get("textRun", {}).get("content", "") for e in p.get("elements", [])
+                   if not (accepted and e.get("textRun", {}).get("suggestedDeletionIds")))
 
 
 def _tight(el):
@@ -991,14 +995,15 @@ def _body_paras(tab):
     return out
 
 
-def _all_texts(tab):
-    """Every paragraph's text in a tab: body (tables included), headers, footers, footnotes."""
+def _all_texts(tab, accepted=False):
+    """Every paragraph's text in a tab: body (tables included), headers, footers, footnotes.
+    accepted=True reads it as if pending suggestions were accepted (suggested deletions out)."""
     out = []
 
     def walk(content):
         for el in content or []:
             if "paragraph" in el:
-                out.append(_para_text(el["paragraph"]))
+                out.append(_para_text(el["paragraph"], accepted))
             elif "table" in el:
                 for row in el["table"].get("tableRows", []):
                     for cell in row.get("tableCells", []):
@@ -1151,8 +1156,13 @@ def _fetch_doc(docs, doc_id):
     return d, d, None
 
 
-def _send_edit(docs, doc_id, rev, requests, dry, done):
-    body = {"requests": requests, "writeControl": {"requiredRevisionId": rev}}
+def _send_edit(docs, doc_id, rev, requests, dry, done, suggest=False):
+    """One guarded batchUpdate. suggest=True writes every request as a suggestion (Docs API
+    writeMode SUGGEST, Sep 2026) for the Doc's editors to accept or reject."""
+    control = {"requiredRevisionId": rev}
+    if suggest:
+        control["writeMode"] = "SUGGEST"
+    body = {"requests": requests, "writeControl": control}
     if dry:
         print(json.dumps(body, indent=1, ensure_ascii=False))
         print(f"-- dry run: {len(requests)} request(s), nothing sent", file=sys.stderr)
@@ -1169,7 +1179,7 @@ def _send_edit(docs, doc_id, rev, requests, dry, done):
             print("This write may or may not have been applied. Look at the Doc before re-running "
                   "(insert and replace refuse to apply twice).")
         _die_google(e, doc_id)
-    print(done)
+    print(done(resp) if callable(done) else done)
     return resp
 
 
@@ -1190,20 +1200,24 @@ def cmd_insert(argv):
     docs = _docs(data)
     d, tab, tab_id = _fetch_doc(docs, doc_id)
     reqs, p = _plan_insert(tab, tab_id, blocks, before or after, after=bool(after))
+    suggest = "--suggest" in argv
     _send_edit(docs, doc_id, d["revisionId"], reqs, "--dry-run" in argv,
-               f"inserted {len(blocks)} paragraph(s) {'after' if after else 'before'} "
-               f"{p['text'].strip()[:50]!r} in {label}")
+               f"{'suggested' if suggest else 'inserted'} {len(blocks)} paragraph(s) "
+               f"{'after' if after else 'before'} {p['text'].strip()[:50]!r} in {label}",
+               suggest=suggest)
 
 
 def cmd_replace(argv):
-    pos = [a for a in argv if a != "--dry-run"]
+    pos = [a for a in argv if a not in ("--dry-run", "--suggest")]
     if len(pos) != 3 or not pos[1]:
         sys.exit("replace needs <file|doc-url> <find> <with>")
     arg, find, new = pos
     data, doc_id, label = _edit_target(arg)
     docs = _docs(data)
     d, tab, tab_id = _fetch_doc(docs, doc_id)
-    texts = _all_texts(tab)
+    # Count against the Doc as it would read with pending suggestions accepted, so a replace
+    # already suggested (its old text marked for deletion) counts as done, not as still to do.
+    texts = _all_texts(tab, accepted=True)
     n = sum(t.count(find) for t in texts)
     if n == 0 and new and any(new in t for t in texts):
         sys.exit(f"{new!r} is already in the Doc and {find!r} is not. Nothing was written "
@@ -1219,8 +1233,14 @@ def cmd_replace(argv):
     req = {"containsText": {"text": find, "matchCase": True}, "replaceText": new}
     if tab_id:
         req["tabsCriteria"] = {"tabIds": [tab_id]}
+    suggest = "--suggest" in argv
+
+    def done(resp):
+        got = ((resp.get("replies") or [{}])[0].get("replaceAllText") or {}).get("occurrencesChanged")
+        return (f"{'suggested a replacement of' if suggest else 'replaced'} "
+                f"{1 if got is None else got} occurrence(s) in {label}")
     _send_edit(docs, doc_id, d["revisionId"], [{"replaceAllText": req}], "--dry-run" in argv,
-               f"replaced 1 occurrence in {label}")
+               done, suggest=suggest)
 
 
 def _refresh_live_word_doc(target: Path, content: bytes, save: bool) -> bool:

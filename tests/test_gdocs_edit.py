@@ -386,3 +386,29 @@ def test_guard_legacy_state_uses_the_pulled_file_as_baseline():
 
 def test_guard_without_a_baseline_time_does_not_block():
     assert not G._doc_changed(FakeDrive("T9", b"x"), "D", {})
+
+
+# ------------------------------------------------------------------ suggest mode
+def test_insert_and_replace_can_write_as_suggestions(fake, capsys):
+    G.cmd_insert([URL, "--after", "Intro", "--md", "New.", "--suggest"])
+    G.cmd_replace([URL, "Few, exceptional hires", "Senior ICs", "--suggest"])
+    a, b = fake.sent
+    assert a["writeControl"] == {"requiredRevisionId": "rev-1", "writeMode": "SUGGEST"}
+    assert b["writeControl"]["writeMode"] == "SUGGEST"
+    out = capsys.readouterr().out
+    assert "suggested 1 paragraph(s) after 'Intro'" in out and "suggested a replacement" in out
+
+
+def test_direct_edits_send_no_write_mode(fake):
+    G.cmd_replace([URL, "Few, exceptional hires", "Senior ICs"])
+    assert "writeMode" not in fake.sent[0]["writeControl"]
+
+
+def test_replace_counts_pending_suggested_deletions_as_gone(fake):
+    # a replace already suggested: the old text is marked for deletion, the new text inserted
+    fake.doc = make_doc([P("Org", runs=[("Few hires", {}), ("Senior ICs", {})])])
+    run = fake.doc["tabs"][0]["documentTab"]["body"]["content"][1]["paragraph"]["elements"][0]
+    run["textRun"]["suggestedDeletionIds"] = ["suggest.1"]
+    with pytest.raises(SystemExit, match="already in the Doc"):
+        G.cmd_replace([URL, "Few hires", "Senior ICs", "--suggest"])
+    assert fake.sent == []
