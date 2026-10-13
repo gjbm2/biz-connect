@@ -16,6 +16,9 @@ else
   echo "    /plugin install biz-connect@biz-connect"
 fi
 
+echo "==> Turning on auto-update (Claude Code then updates biz-connect at startup)"
+sh "$ROOT/bin/bizconnect" update --auto || true
+
 echo "==> Checking setup (doctor)"
 # bin/bizconnect is the command shim: it picks python3 / python / py -3 and runs the launcher.
 sh "$ROOT/bin/bizconnect" doctor || true

@@ -81,6 +81,43 @@
     return out;
   }
 
+  function fileNameFrom(text, url) {
+    const m = String(text || '').match(/[^\s\\/:*?"<>|]+\.[A-Za-z0-9]{2,5}\b/);
+    if (m) return m[0];
+    try {
+      const last = decodeURIComponent(new URL(url).pathname.split('/').pop() || '');
+      if (/\.[A-Za-z0-9]{2,5}$/.test(last)) return last;
+    } catch (e) { /* not a URL */ }
+    return '';
+  }
+
+  // What the user right-clicked (recorded by target.js): a link, image, media or attachment.
+  function describeTarget() {
+    const t = window.__bizcTarget;
+    if (!t || !t.el || !t.el.isConnected || Date.now() - t.at > 120000) return null;
+    const el = t.el;
+    const out = {};
+    // Gmail attachment chips (and other drag-out downloads) carry download_url="mime:name:url".
+    const dl = el.closest('[download_url]');
+    const dm = dl && dl.getAttribute('download_url').match(/^([^:]+):([^:]+):(https?:.+)$/);
+    if (dm) Object.assign(out, { kind: 'file', mime: dm[1], name: dm[2], url: dm[3] });
+    const a = el.closest('a[href]');
+    const media = el.closest('img,video,audio');
+    if (!out.url && a && !/^javascript:/i.test(a.getAttribute('href'))) {
+      Object.assign(out, { kind: 'link', url: a.href });
+      if (a.getAttribute('download')) out.name = a.getAttribute('download');
+    } else if (!out.url && media) {
+      Object.assign(out, { kind: media.tagName.toLowerCase() === 'img' ? 'image' : media.tagName.toLowerCase(),
+        url: media.currentSrc || media.src, name: media.getAttribute('alt') || '' });
+    }
+    const host = dl || a || el;
+    const label = host.getAttribute('aria-label') || host.getAttribute('title') || '';
+    out.text = ((host.innerText || '').trim() || label).replace(/\s+/g, ' ').slice(0, 300);
+    if (!out.name) out.name = fileNameFrom(`${label} ${out.text}`, out.url);
+    if (out.kind === 'link' && (out.name || /[?&]view=att\b/.test(out.url))) out.kind = 'file';
+    return out.url || out.text ? out : null;
+  }
+
   function capture() {
     const site = siteOf(location);
     const ae = document.activeElement;
@@ -118,9 +155,11 @@
       const m = location.pathname.match(/\/document\/d\/([^/]+)/);
       if (m) anchor.doc_id = m[1];
     }
+    const target = describeTarget();
+    window.__bizcTarget = null;              // one right-click, one capture
     return {
       url: location.href, title: document.title, site,
-      selection: selection.slice(0, MAX_SEL), around, editable, anchor,
+      selection: selection.slice(0, MAX_SEL), around, editable, anchor, target,
     };
   }
 

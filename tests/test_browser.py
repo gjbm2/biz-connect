@@ -227,3 +227,143 @@ def test_launcher_finds_the_installed_plugin(tmp_path, monkeypatch):
     assert mod["plugin_root"]() == dev
     monkeypatch.setenv("BIZCONNECT_PLUGIN_ROOT", str(old))      # and the env var beats both
     assert mod["plugin_root"]() == old
+
+
+# ------------------------------------------------------------------------- files
+def test_prompt_lists_staged_files_and_right_clicked_links():
+    files = [{"path": "C:/x/files/s/report.pdf", "name": "report.pdf", "mime": "application/pdf",
+              "bytes": 2048, "url": "https://mail.google.com/att?id=1"}]
+    ctx = {"url": "https://mail.google.com/mail/u/0/#inbox/abc", "title": "Inbox",
+           "target": {"kind": "file", "name": "report.pdf", "url": "https://mail.google.com/att?id=1"}}
+    p = H.build_prompt(ctx, "Summarise it", None, files)
+    assert "- report.pdf (application/pdf, 2.0 KB): C:/x/files/s/report.pdf" in p
+    assert "right_clicked" not in p                            # the target is the staged file
+    link = {"url": "https://e.com", "target": {"kind": "link", "url": "https://e.com/post", "text": "A post"}}
+    q = H.build_prompt(link, "x")
+    assert 'right_clicked: link https://e.com/post (link text: "A post")' in q
+    assert p.index("attached files") < p.index("</browser_context>")
+    f = H.build_followup("and this?", files)
+    assert f.startswith("and this?\n\nattached files") and "report.pdf" in f
+
+
+def test_safe_and_unique_names(tmp_path):
+    assert H.safe_name("../../etc/passwd") == "passwd"
+    assert H.safe_name('a<b>:c"?.pdf') == "a_b_c_.pdf"
+    assert H.safe_name("CON.txt") == "_CON.txt"
+    assert H.safe_name("") == "file"
+    (tmp_path / "r.pdf").write_text("x")
+    assert H.unique_path(tmp_path, "r.pdf").name == "r (2).pdf"
+
+
+def test_cleanup_removes_only_old_staging_folders(tmp_path):
+    import os
+    import time
+    old, new = tmp_path / "old", tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    past = time.time() - 9 * 86400
+    os.utime(old, (past, past))
+    H.cleanup_files(tmp_path, days=7)
+    assert not old.exists() and new.exists()
+
+
+def _host(store):
+    sent = []
+    h = H.Host(sent.append)
+    return h, sent
+
+
+def test_stage_bytes_assembles_chunks(store):
+    h, sent = _host(store)
+    data = b"hello " * 1000
+    half = len(data) // 2
+    h._stage_bytes({"id": "f1", "name": "notes.txt", "mime": "text/plain", "seq": 0, "last": False,
+                    "data": base64.b64encode(data[:half]).decode()})
+    h._stage_bytes({"id": "f1", "seq": 1, "last": True, "data": base64.b64encode(data[half:]).decode()})
+    msg = sent[-1]
+    assert msg["type"] == "staged" and msg["name"] == "notes.txt" and msg["bytes"] == len(data)
+    assert Path(msg["path"]).read_bytes() == data
+    assert H.within(msg["path"], H.files_root())
+    assert h._accept_files([{"path": msg["path"]}, {"path": str(store / "elsewhere.txt")}])[0]["name"] == "notes.txt"
+    assert len(h._accept_files([{"path": str(store / "elsewhere.txt")}])) == 0
+
+
+def test_stage_download_moves_the_file_out_of_downloads(store, tmp_path):
+    h, sent = _host(store)
+    dl = tmp_path / "Downloads" / "biz-connect"
+    dl.mkdir(parents=True)
+    src = dl / "report.pdf"
+    src.write_bytes(b"%PDF-1.4 ...")
+    h._stage_download({"id": "f2", "path": str(src), "name": "Q3 report.pdf", "mime": "application/pdf",
+                       "url": "https://mail.google.com/x"})
+    msg = sent[-1]
+    assert msg["type"] == "staged" and msg["name"] == "Q3 report.pdf" and not src.exists()
+    h._stage_download({"id": "f3", "path": str(dl / "missing.pdf")})
+    assert sent[-1]["type"] == "stage_failed"
+
+
+def test_system_prompt_covers_files():
+    assert "attached files" in H.SYSTEM_APPEND and "gdoc read" in H.SYSTEM_APPEND
+
+
+def test_capture_reads_gmail_download_url():
+    js = (EXT / "capture.js").read_text(encoding="utf-8")
+    assert "download_url" in js and "__bizcTarget" in js
+    man = json.loads((EXT / "manifest.json").read_text(encoding="utf-8"))
+    assert "downloads" in man["permissions"]
+    assert man["content_scripts"][0]["js"] == ["target.js"]
+
+
+# ------------------------------------------------------------------- vscode / updates
+def test_vscode_exe_prefers_config_and_never_cursor(tmp_path, monkeypatch):
+    code = tmp_path / "Code.exe"
+    code.write_text("")
+    assert H.vscode_exe({"vscode_path": str(code)}) == str(code)
+    cursor = tmp_path / "cursor" / "Code.exe"
+    cursor.parent.mkdir()
+    cursor.write_text("")
+    monkeypatch.setattr(H.os, "name", "posix")
+    monkeypatch.setattr(H.sys, "platform", "linux")
+    monkeypatch.setattr(H.Path, "exists", lambda self: str(self) == str(cursor))
+    assert H.vscode_exe({}) is None                            # only a Cursor build: refuse it
+
+
+def test_sessions_are_not_marked_as_sdk():
+    assert not H.ENTRYPOINT.startswith("sdk-") and H.ENTRYPOINT != "cli"
+
+
+def test_sync_installed_copy_follows_the_plugin(store):
+    bdir = store / "browser"
+    (bdir / "extension").mkdir(parents=True)
+    (bdir / "extension" / "manifest.json").write_text('{"version": "0.0.1"}', encoding="utf-8")
+    (bdir / "launch.py").write_text("old", encoding="utf-8")
+    H.sync_installed_copy({"extension_dir": str(bdir / "extension")})
+    assert H.extension_version(bdir / "extension") == H.extension_version(EXT)
+    assert (bdir / "launch.py").read_text(encoding="utf-8") == (ROOT / "browser" / "launch.py").read_text(encoding="utf-8")
+
+
+def test_sync_leaves_a_dev_install_alone(store):
+    bdir = store / "browser"
+    (bdir / "extension").mkdir(parents=True)
+    (bdir / "extension" / "manifest.json").write_text('{"version": "0.0.1"}', encoding="utf-8")
+    H.sync_installed_copy({"pin_plugin_root": True, "extension_dir": str(EXT)})
+    assert H.extension_version(bdir / "extension") == "0.0.1"
+
+
+def test_update_auto_turns_on_marketplace_auto_update(tmp_path, monkeypatch, capsys):
+    from bizconnect import update as U
+    cdir = tmp_path / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cdir))
+    (cdir / "settings.json").write_text(json.dumps({"model": "opus", "enabledPlugins": {"biz-connect@biz-connect": True}}),
+                                        encoding="utf-8")
+    (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps(
+        {"biz-connect": {"source": {"source": "directory", "path": "/src/biz-connect"}}}), encoding="utf-8")
+    assert U.auto_update_state() is None
+    assert U.cmd_update(["--auto"]) == 0
+    data = json.loads((cdir / "settings.json").read_text(encoding="utf-8"))
+    assert data["model"] == "opus" and data["enabledPlugins"]["biz-connect@biz-connect"] is True
+    assert data["extraKnownMarketplaces"]["biz-connect"] == {
+        "source": {"source": "directory", "path": "/src/biz-connect"}, "autoUpdate": True}
+    assert U.auto_update_state() is True and (cdir / "settings.json.bak").exists()
+    assert U.cmd_update(["--auto"]) == 0 and "already on" in capsys.readouterr().out

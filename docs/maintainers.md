@@ -34,6 +34,10 @@ Internal notes for people developing biz-connect itself. Users need only the
   host script runs it under the bridge venv (`browser/requirements.txt`, kept out of the main
   requirements because the Agent SDK bundles ~250 MB). launch.py finds the current plugin folder
   at each start, so updates don't break the registration. `install --dev` pins it to a clone.
+- Browser runs set `CLAUDE_CODE_ENTRYPOINT=biz-connect-browser` (`browser_host.ENTRYPOINT`): VS Code's
+  Claude extension hides `sdk-*` sessions, and headless `cli` becomes `sdk-cli`. The host refreshes the
+  store's extension copy and launch.py from the plugin at start (`sync_installed_copy`); the panel
+  reloads itself once when the plugin's extension version differs from its own.
 - Test the host without a browser by speaking native messaging to the host script (4-byte
   length + JSON) and answering `page_tool` / `permission` messages; test the extension in a full
   Chromium with `--load-extension` (headless shells can't load extensions).

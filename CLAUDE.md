@@ -81,7 +81,7 @@ bizconnect git     save|sync|pr                             # safe, standardised
 bizconnect browser install|status|add|menu                  # Ask Claude browser extension (browser-bridge skill)
 bizconnect compose status|run|accept|graph                  # doc-composition pipeline (needs pipeline.yaml); `run inputs` syncs sources
 bizconnect doctor                                           # diagnose setup
-bizconnect update                                           # check for a newer version
+bizconnect update [--auto]                                  # check for a newer version; --auto: Claude Code updates biz-connect at startup
 ```
 
 **Notion sync** (needs biz-connect 0.13 or later; full guide: the **notion-sync** skill): a

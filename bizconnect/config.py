@@ -100,16 +100,26 @@ def service_account_file() -> Path:
     return p
 
 
+def claude_dir() -> Path:
+    """Claude Code's user config folder (CLAUDE_CONFIG_DIR, default ~/.claude)."""
+    base = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(base) if base else Path.home() / ".claude"
+
+
+def claude_settings() -> dict | None:
+    try:
+        import json
+        return json.loads((claude_dir() / "settings.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+
+
 def claude_plugin_state():
     """Is the biz-connect plugin enabled in Claude Code's user settings? True, False (installed
     but disabled: no skills load and `bizconnect` isn't on PATH in sessions, though the launcher
     still works), or None (no entry / unreadable)."""
-    base = os.environ.get("CLAUDE_CONFIG_DIR")
-    path = (Path(base) if base else Path.home() / ".claude") / "settings.json"
-    try:
-        import json
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
+    data = claude_settings()
+    if data is None:
         return None
     vals = [v for k, v in (data.get("enabledPlugins") or {}).items()
             if str(k).split("@")[0] == "biz-connect"]

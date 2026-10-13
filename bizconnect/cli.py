@@ -257,6 +257,9 @@ def cmd_doctor():
             rep.warn("plugin", "biz-connect is installed but DISABLED: its skills don't load and "
                      "`bizconnect` isn't on PATH in sessions. Run `claude plugin enable "
                      "biz-connect@biz-connect`, then start a new session.")
+        from . import update as _u
+        rep.line("auto-update", "on" if _u.auto_update_state() is True
+                 else "off: updates wait for `/plugin update` (turn on: `bizconnect update --auto`)")
 
     # -- this repo
     if root:

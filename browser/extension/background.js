@@ -21,7 +21,7 @@ async function buildMenu(items) {
     }
   }
   await chrome.contextMenus.removeAll();
-  const contexts = ['selection', 'page', 'editable', 'link'];
+  const contexts = ['selection', 'page', 'editable', 'link', 'image', 'video', 'audio'];
   chrome.contextMenus.create({ id: ASK_ID, title: 'Ask Claude…', contexts });
   for (const it of items) {
     const props = { id: 'bizc-item:' + it.id, title: it.label, contexts };
@@ -68,7 +68,17 @@ async function inject(tabId, allFrames) {
   return chrome.scripting.executeScript({ target, func: () => (window.__bizc ? window.__bizc.capture() : null) });
 }
 
-async function capture(tab, itemId, selectionText) {
+// What the browser says was right-clicked: the fallback when target.js isn't in the page yet
+// (a tab opened before the extension was installed or reloaded).
+function targetFromInfo(info) {
+  if (!info) return null;
+  const url = info.srcUrl || info.linkUrl;
+  if (!url) return null;
+  const kind = info.mediaType || 'link';
+  return { kind, url, name: '', text: info.linkText || '' };
+}
+
+async function capture(tab, itemId, selectionText, info) {
   let ctx = null;
   try {
     let results;
@@ -87,21 +97,22 @@ async function capture(tab, itemId, selectionText) {
   }
   ctx = { url: tab.url, title: tab.title, selection: '', ...(ctx || {}) };
   if (!ctx.selection && selectionText) ctx.selection = selectionText;
+  if (!ctx.target) ctx.target = targetFromInfo(info);
   ctx.tabId = tab.id;
   ctx.windowId = tab.windowId;
   await chrome.storage.session.set({ pending: { ctx, itemId: itemId || null, at: Date.now() } });
 }
 
-function trigger(tab, itemId, selectionText) {
+function trigger(tab, itemId, selectionText, info) {
   if (!tab || tab.id === undefined) return;
   openPanel(tab);
-  capture(tab, itemId, selectionText);
+  capture(tab, itemId, selectionText, info);
 }
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   const id = String(info.menuItemId);
   const itemId = id.startsWith('bizc-item:') ? id.slice('bizc-item:'.length) : null;
-  trigger(tab, itemId, info.selectionText);
+  trigger(tab, itemId, info.selectionText, info);
 });
 
 chrome.commands.onCommand.addListener((command, tab) => {

@@ -143,7 +143,64 @@ def maybe_nudge():
         pass
 
 
+MARKETPLACE = "biz-connect"
+
+
+def auto_update_state():
+    """Does Claude Code auto-update the biz-connect marketplace (and its plugin) at startup?
+    Third-party marketplaces default to off, so None (no setting) means off in practice."""
+    data = config.claude_settings() or {}
+    entry = (data.get("extraKnownMarketplaces") or {}).get(MARKETPLACE) or {}
+    val = entry.get("autoUpdate")
+    if val is None:
+        try:
+            known = json.loads((config.claude_dir() / "plugins" / "known_marketplaces.json")
+                               .read_text(encoding="utf-8-sig"))
+            val = (known.get(MARKETPLACE) or {}).get("autoUpdate")
+        except (OSError, ValueError):
+            pass
+    return val
+
+
+def enable_auto_update() -> Path:
+    """Set extraKnownMarketplaces.biz-connect.autoUpdate = true in Claude Code's user settings
+    (keeping everything else; a .bak copy is left beside it). Claude Code applies it at startup."""
+    path = config.claude_dir() / "settings.json"
+    data = config.claude_settings()
+    if data is None:
+        if path.exists():
+            raise ValueError(f"{path} is not valid JSON; fix it, then re-run")
+        data = {}
+    else:
+        path.with_name("settings.json.bak").write_text(path.read_text(encoding="utf-8-sig"), encoding="utf-8")
+    markets = data.setdefault("extraKnownMarketplaces", {})
+    entry = markets.setdefault(MARKETPLACE, {})
+    if "source" not in entry:
+        try:
+            known = json.loads((config.claude_dir() / "plugins" / "known_marketplaces.json")
+                               .read_text(encoding="utf-8-sig"))
+            entry["source"] = (known.get(MARKETPLACE) or {})["source"]
+        except (OSError, ValueError, KeyError):
+            entry["source"] = {"source": "github", "repo": DEFAULT_REPO}
+    entry["autoUpdate"] = True
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
+
+
 def cmd_update(argv):
+    if "--auto" in argv:
+        if auto_update_state() is True:
+            print("auto-update is already on: Claude Code updates biz-connect when it starts.")
+            return 0
+        try:
+            path = enable_auto_update()
+        except ValueError as e:
+            print(f"could not turn on auto-update: {e}")
+            return 1
+        print(f"auto-update turned on in {path}: Claude Code now updates biz-connect when it starts "
+              f"(restart Claude Code once for it to take effect).")
+        return 0
     c = check(force=True)
     print(f"installed: {c['installed']}")
     print(f"latest:    {c['latest']}  (from {c.get('repo')})")
@@ -157,4 +214,7 @@ def cmd_update(argv):
         print("load at session start, so start a new Claude Code session afterwards.")
     elif not c.get("last_error"):
         print("up to date.")
+    if auto_update_state() is not True:
+        print("\nauto-update is off (Claude Code's default for third-party marketplaces). "
+              "Turn it on with: bizconnect update --auto")
     return 0

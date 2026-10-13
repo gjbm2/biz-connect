@@ -13,6 +13,9 @@ if (Get-Command claude -ErrorAction SilentlyContinue) {
   Write-Host '    /plugin install biz-connect@biz-connect'
 }
 
+Write-Host '==> Turning on auto-update (Claude Code then updates biz-connect at startup)'
+& "$root\bin\bizconnect.cmd" update --auto
+
 Write-Host '==> Checking setup (doctor)'
 # bin\bizconnect.cmd is the command shim: it picks py -3 / python and runs the launcher
 # (and says so if no Python 3.9+ is installed).

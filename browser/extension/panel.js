@@ -12,7 +12,11 @@ const S = {
   port: null, hello: null, ctx: null, itemId: null, lastAt: 0,
   session: false, running: false, sessionId: null, contextChanged: false,
   autoRun: false, windowId: null, popup: location.search.includes('popup=1'),
+  files: [],            // attached files: {id, name, state: fetching|ready|failed, path, bytes, mime, url, error}
 };
+const FILE_KINDS = new Set(['file', 'image', 'video', 'audio']);
+const MAX_DROP_BYTES = 48 * 1024 * 1024;   // dropped/pasted files travel through native messaging
+const CHUNK = 3 * 1024 * 1024;
 
 // ------------------------------------------------------------------------ rendering
 function esc(s) {
@@ -91,6 +95,9 @@ function renderContext() {
   if (ctx.selection) {
     sel.textContent = ctx.selection;
     sel.classList.remove('none');
+  } else if (ctx.target && (ctx.target.name || ctx.target.url)) {
+    sel.textContent = `Right-clicked ${ctx.target.kind || 'item'}: ${ctx.target.name || ctx.target.text || ctx.target.url}`;
+    sel.classList.add('none');
   } else {
     sel.textContent = 'Nothing selected: Claude gets the page.';
     sel.classList.add('none');
@@ -125,18 +132,160 @@ function renderChips() {
   }
 }
 
+function fmtSize(n) {
+  if (!n && n !== 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function renderFiles() {
+  const box = $('files');
+  box.innerHTML = '';
+  for (const f of S.files) {
+    const el = div(`file ${f.state}`, '');
+    const icon = f.state === 'fetching' ? '⏳' : f.state === 'failed' ? '⚠' : '📎';
+    el.innerHTML = `<span>${icon}</span><span class="n" title="${esc(f.path || f.url || f.name)}">${esc(f.name || 'file')}</span>`
+      + `<span class="s">${f.state === 'failed' ? esc(f.error || 'failed') : f.state === 'fetching' ? 'fetching…' : fmtSize(f.bytes)}</span>`
+      + '<button title="Remove">×</button>';
+    el.querySelector('button').onclick = () => {
+      S.files = S.files.filter((x) => x !== f);
+      if (f.state === 'ready' && f.path) send({ type: 'unstage', path: f.path });
+      renderFiles();
+      renderState();
+    };
+    box.appendChild(el);
+  }
+}
+
 function renderState() {
   const dot = $('dot');
   dot.className = `dot ${!S.port ? 'off' : S.running ? 'busy' : 'on'}`;
   dot.title = !S.port ? 'Bridge not connected' : S.running ? 'Working' : 'Ready';
   $('send').textContent = S.session && !S.contextChanged ? 'Send' : 'Run';
-  $('send').disabled = S.running || !S.port;
+  $('send').disabled = S.running || !S.port || S.files.some((f) => f.state === 'fetching');
   $('stop').hidden = !S.running;
   const has = !!S.sessionId;
   $('vscode').hidden = !has;
   $('copysid').hidden = !has;
   $('newrun').hidden = !S.session || S.running;
-  $('input').placeholder = S.session && !S.contextChanged ? 'Follow up…' : 'What should Claude do with this?';
+  const ready = S.files.filter((f) => f.state === 'ready');
+  $('input').placeholder = S.session && !S.contextChanged ? 'Follow up…'
+    : ready.length === 1 && !(S.ctx && S.ctx.selection) ? `What should Claude do with ${ready[0].name}?`
+      : 'What should Claude do with this?';
+}
+
+// ------------------------------------------------------------------------ attachments
+function newFile(name, url) {
+  const f = { id: `f${Date.now()}${Math.floor(Math.random() * 1e6)}`, name, url, state: 'fetching' };
+  S.files.push(f);
+  renderFiles();
+  renderState();
+  return f;
+}
+
+function failFile(f, err) {
+  f.state = 'failed';
+  f.error = String((err && err.message) || err);
+  renderFiles();
+  renderState();
+}
+
+function waitForDownload(id, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn, v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      chrome.downloads.onChanged.removeListener(onChange);
+      fn(v);
+    };
+    const check = async () => {
+      const [it] = await chrome.downloads.search({ id });
+      if (!it) return;
+      if (it.state === 'complete') finish(resolve, it);
+      else if (it.state === 'interrupted') finish(reject, new Error(`download failed (${it.error || 'interrupted'})`));
+    };
+    const onChange = (d) => { if (d.id === id && d.state) check(); };
+    const timer = setTimeout(() => finish(reject, new Error('download timed out')), timeoutMs);
+    chrome.downloads.onChanged.addListener(onChange);
+    check();
+  });
+}
+
+function safeFileName(name) {
+  return String(name || '').replace(/[\x00-\x1f<>:"/\\|?*]+/g, '_').replace(/^[ .]+|[ .]+$/g, '').slice(0, 120);
+}
+
+// A right-clicked attachment, image or file link: downloaded by the browser itself, so the
+// user's own session (Gmail, Notion, an intranet) applies; the host then moves it into staging.
+async function stageTarget(t) {
+  if (S.files.some((f) => f.url === t.url && f.state !== 'failed')) return;
+  const f = newFile(t.name || t.text || 'download', t.url);
+  try {
+    if (!/^(https?|data):/i.test(t.url)) throw new Error('this kind of link cannot be downloaded');
+    const opts = { url: t.url, conflictAction: 'uniquify', saveAs: false };
+    const name = safeFileName(t.name);
+    if (name) opts.filename = `biz-connect/${name}`;
+    const dlId = await chrome.downloads.download(opts);
+    const item = await waitForDownload(dlId, 180000);
+    f.downloadId = dlId;
+    f.name = t.name || item.filename.split(/[\\/]/).pop();
+    if (!send({ type: 'stage', id: f.id, path: item.filename, name: f.name, mime: item.mime, url: t.url })) {
+      throw new Error('bridge not connected');
+    }
+  } catch (e) {
+    failFile(f, e);
+  }
+}
+
+function toBase64(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+// A dropped or pasted file: the panel can't see its path, so the bytes go to the host in chunks.
+async function stageBytes(file) {
+  const ext = (file.type.split('/')[1] || 'bin').replace(/[^a-z0-9]/gi, '');
+  const name = file.name || `pasted-${new Date().toISOString().replace(/[:.]/g, '-')}.${ext}`;
+  const f = newFile(name, null);
+  try {
+    if (file.size > MAX_DROP_BYTES) throw new Error(`too large to drop (${fmtSize(file.size)}; limit ${fmtSize(MAX_DROP_BYTES)})`);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let seq = 0;
+    for (let i = 0; i === 0 || i < bytes.length; i += CHUNK) {
+      const last = i + CHUNK >= bytes.length;
+      if (!send({ type: 'stage_bytes', id: f.id, name, mime: file.type, seq: seq++, last, data: toBase64(bytes.subarray(i, i + CHUNK)) })) {
+        throw new Error('bridge not connected');
+      }
+      if (last) break;
+    }
+  } catch (e) {
+    failFile(f, e);
+  }
+}
+
+function takeFiles(dt) {
+  const files = [...((dt && dt.files) || [])];
+  if (files.length) {
+    files.forEach(stageBytes);
+    return true;
+  }
+  // A dragged attachment chip or link: Chrome exposes "mime:name:url" or a plain URL.
+  const dl = (dt && (dt.getData('DownloadURL') || dt.getData('downloadurl'))) || '';
+  const m = dl.match(/^([^:]+):([^:]+):(https?:.+)$/);
+  if (m) {
+    stageTarget({ kind: 'file', url: m[3], name: m[2] });
+    return true;
+  }
+  const uri = ((dt && dt.getData('text/uri-list')) || '').split('\n').find((l) => /^https?:/i.test(l.trim()));
+  if (uri) {
+    stageTarget({ kind: 'file', url: uri.trim(), name: '' });
+    return true;
+  }
+  return false;
 }
 
 // ------------------------------------------------------------------------ host link
@@ -184,6 +333,17 @@ function send(obj) {
 async function onHost(msg) {
   switch (msg.type) {
     case 'hello': {
+      // biz-connect updated the extension's files: reload once to pick them up.
+      const mine = chrome.runtime.getManifest().version;
+      if (msg.extension_version && msg.extension_version !== mine) {
+        const { reloadedFor } = await chrome.storage.local.get('reloadedFor');
+        if (reloadedFor !== msg.extension_version) {
+          await chrome.storage.local.set({ reloadedFor: msg.extension_version });
+          banner(`Updating the extension to ${esc(msg.extension_version)}…`);
+          setTimeout(() => chrome.runtime.reload(), 400);
+          return;
+        }
+      }
       S.hello = msg;
       const sel = $('workspace');
       sel.innerHTML = '';
@@ -197,6 +357,9 @@ async function onHost(msg) {
       }
       const probs = [];
       if (msg.protocol !== PROTOCOL) probs.push('The extension and the bridge are different versions: run <code>bizconnect browser install</code> and reload the extension.');
+      if (msg.extension_version && msg.extension_version !== mine) {
+        probs.push(`This extension is ${esc(mine)} but biz-connect has ${esc(msg.extension_version)}: press reload on its card in your browser's extensions page.`);
+      }
       if (!(msg.workspaces || []).length) probs.push('No workspace yet: in your repo, run <code>bizconnect browser add</code>.');
       for (const p of msg.problems || []) probs.push(`connections.yaml: ${esc(p)}`);
       banner(probs.join('<br>'));
@@ -249,6 +412,25 @@ async function onHost(msg) {
       S.session = false;
       S.sessionId = null;
       break;
+    case 'continued':
+      note('ok', msg.text);
+      S.session = false;                   // the session now lives in VS Code
+      S.running = false;
+      break;
+    case 'staged': {
+      const f = S.files.find((x) => x.id === msg.id);
+      if (f) {
+        Object.assign(f, { state: 'ready', path: msg.path, name: msg.name, bytes: msg.bytes, mime: msg.mime });
+        if (f.downloadId !== undefined) chrome.downloads.erase({ id: f.downloadId }).catch(() => {});
+        renderFiles();
+      }
+      break;
+    }
+    case 'stage_failed': {
+      const f = S.files.find((x) => x.id === msg.id);
+      if (f) failFile(f, msg.error);
+      break;
+    }
     default:
       break;
   }
@@ -307,8 +489,12 @@ function run() {
     S.autoRun = true;                    // run as soon as the bridge says hello
     return;
   }
+  if (S.files.some((f) => f.state === 'fetching')) return;
   const fresh = !S.session || S.contextChanged;
   const item = ((S.hello && S.hello.menu) || []).find((m) => m.id === S.itemId);
+  const files = S.files.filter((f) => f.state === 'ready')
+    .map(({ path, name, mime, bytes, url }) => ({ path, name, mime, bytes, url }));
+  const clip = files.length ? `\n📎 ${files.map((f) => f.name).join(', ')}` : '';
   if (fresh) {
     if (!text && !item) {
       $('input').focus();
@@ -317,16 +503,18 @@ function run() {
     const ctx = { ...(S.ctx || {}) };
     if (!$('paste').hidden && $('paste').value.trim()) ctx.selection = $('paste').value.trim();
     if (S.session) $('log').innerHTML = '';
-    if (!send({ type: 'run', workspace: $('workspace').value || undefined, context: ctx, instruction: text, item_id: item ? item.id : undefined })) return;
-    add(div('msg user', esc([item && `[${item.label}]`, text].filter(Boolean).join(' '))));
+    if (!send({ type: 'run', workspace: $('workspace').value || undefined, context: ctx, instruction: text, item_id: item ? item.id : undefined, files })) return;
+    add(div('msg user', esc([item && `[${item.label}]`, text].filter(Boolean).join(' ') + clip)));
     S.session = true;
     S.contextChanged = false;
     S.sessionId = null;
   } else {
     if (!text) return;
-    if (!send({ type: 'followup', text })) return;
-    add(div('msg user', esc(text)));
+    if (!send({ type: 'followup', text, files })) return;
+    add(div('msg user', esc(text + clip)));
   }
+  S.files = S.files.filter((f) => f.state !== 'ready');       // sent: they now live in the transcript
+  renderFiles();
   S.running = true;
   $('input').value = '';
   renderState();
@@ -342,6 +530,8 @@ function applyPending(p) {
   renderContext();
   renderChips();
   renderState();
+  const t = S.ctx.target;
+  if (t && t.url && FILE_KINDS.has(t.kind)) stageTarget(t);   // right-clicked a file: fetch it now
   if (S.itemId && !S.running) run();
   else $('input').focus();
 }
@@ -373,6 +563,24 @@ $('copysid').onclick = async () => {
   }
 };
 $('workspace').onchange = () => send({ type: 'hello', workspace: $('workspace').value });
+document.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  document.body.classList.add('dropping');
+});
+document.addEventListener('dragleave', (e) => {
+  if (!e.relatedTarget) document.body.classList.remove('dropping');
+});
+document.addEventListener('drop', (e) => {
+  e.preventDefault();
+  document.body.classList.remove('dropping');
+  takeFiles(e.dataTransfer);
+});
+document.addEventListener('paste', (e) => {
+  if (e.clipboardData && e.clipboardData.files.length) {     // a screenshot or copied file;
+    e.preventDefault();                                       // plain text pastes as usual
+    takeFiles(e.clipboardData);
+  }
+});
 $('selection').onclick = () => $('selection').classList.toggle('open');
 $('recapture').onclick = async () => {
   let windowId = S.windowId;

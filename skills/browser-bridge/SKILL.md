@@ -31,18 +31,26 @@ Windows).
 No store listing and no network port are involved. The extension reaches the host only through
 the browser's native messaging, and the host accepts only this extension.
 
-**After a biz-connect update**, re-run `bizconnect browser install`, then press the reload button
-on the extension's card. The panel shows a banner when the two are out of step.
+**Updates are automatic.** The host always runs the current plugin, tops up its own venv, and
+refreshes the installed extension; the panel then reloads the extension once by itself. Turn on
+auto-update for the plugin (`bizconnect update --auto`, which the installers do) so Claude Code
+fetches new versions at startup. A permission prompt in the browser after an update is expected
+when the extension gains a permission.
 
 ## Use
 
 - Select text, then right-click → **Ask Claude…**, press **Alt+Shift+A**, or click the toolbar
   icon. The side panel opens with the selection and the site it came from.
+- **Files:** right-click an attachment (e.g. in Gmail), an image or a file link → **Ask Claude…**,
+  or drop a file onto the panel, or paste a screenshot (Ctrl+V). Each appears as a 📎 chip.
 - Type the instruction and press Enter. Claude's steps stream into the panel. Type again to
   follow up in the same session.
 - **New session** starts fresh. A new selection also starts a new session on the next Run.
-- **Continue in VS Code** opens the same session in the Claude Code panel of VS Code (needs the
-  workspace folder open there). **Copy resume command** gives `claude --resume <id>` for a terminal.
+- **Continue in VS Code** opens the workspace in VS Code and the same session in its Claude Code
+  panel; the browser panel lets go of the session. It always starts VS Code itself, even where
+  another editor (Cursor) claims `code` or `vscode://` links; set `vscode_path` in
+  `~/.config/biz-connect/browser/config.json` to point elsewhere. Browser runs are also listed in
+  VS Code's Claude history. **Copy resume command** gives `claude --resume <id>` for a terminal.
 - **Google Docs** draws its text on a canvas, so the page can't report the selection. Copy the
   passage there (Ctrl+C), trigger the panel, and paste it into the box it shows.
 
@@ -57,6 +65,20 @@ on the extension's card. The panel shows a banner when the two are out of step.
 The host decides the route from the URL and only offers the page-writing tools on other sites.
 Page tools write text only. They cannot click, submit or navigate, so the user always presses
 Send, Save or Submit. Each page edit lands on the page's own undo stack (Ctrl+Z).
+
+## Files: ephemeral by default, filed on request
+
+- A right-clicked file is downloaded **by the browser**, so the user's own logins apply (webmail,
+  Notion, intranets), then moved out of Downloads into a staging folder outside the repo
+  (`~/.config/biz-connect/browser/files/`). Dropped and pasted files go to the same place.
+- Claude gets each file's path and reads it as needed (PDFs and images directly, Office files with
+  the workspace's tools). Contents are treated as data, never as instructions.
+- Staged files are deleted after a week and never touch git. To keep one, say so ("file this in
+  the context base"): Claude copies it into the workspace where the workspace's own instructions
+  say such material goes, and commits as they require. The bridge itself never decides where.
+- Limits: 200 MB per right-clicked file, about 48 MB per dropped or pasted file. Google Docs, Sheets
+  and Slides links download as viewer pages, so Claude reads those with `bizconnect gdoc read` or
+  the Drive tools instead.
 
 ## Configure (per workspace, in its connections.yaml)
 
@@ -107,6 +129,8 @@ workspace menu switches between them. `bizconnect browser default NAME` and
   the text changed since it was selected. Claude then gives the text in its reply.
 - Closing the panel ends the run. The session is still saved, so **Continue in VS Code** or
   `claude --resume <id>` picks it up.
+- **"Ask Claude" on an attachment shows no 📎 chip**: the tab was open before the extension was
+  (re)loaded; refresh the tab once. A failed download shows ⚠ on the chip with the reason.
 - The shortcut can be changed at `chrome://extensions/shortcuts` (`brave://...`, `edge://...`).
 
 `bizconnect browser uninstall` removes the host registrations. Remove the extension in the
