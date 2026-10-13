@@ -451,3 +451,47 @@ def test_delete_refuses_last_paragraph_table_neighbour_and_repeat(fake):
     with pytest.raises(SystemExit, match="already marked for deletion"):
         G.cmd_delete([URL, "Gone", "--suggest"])
     assert fake.sent == []
+
+
+# ------------------------------------------------------------------ accept / reject
+def _with_suggestions(fake):
+    fake.doc = make_doc([P("Was now", runs=[("Was", {}), (" now", {})]), P("End")])
+    body = fake.doc["tabs"][0]["documentTab"]["body"]["content"]
+    body[1]["paragraph"]["elements"][0]["textRun"]["suggestedDeletionIds"] = ["s.del"]
+    body[1]["paragraph"]["elements"][1]["textRun"]["suggestedInsertionIds"] = ["s.ins"]
+    body[2]["paragraph"]["suggestedParagraphStyleChanges"] = {"s.style": {}}
+    fake.doc["tabs"][0]["documentTab"]["lists"] = {"kix.1": {"suggestedInsertionId": "s.list"}}
+
+
+def test_accept_all_accepts_every_pending_suggestion(fake, capsys):
+    _with_suggestions(fake)
+    G.cmd_accept([URL, "--all"])
+    (body,) = fake.sent
+    assert body["requests"] == [{"acceptSuggestion": {"suggestionId": i}}
+                                for i in ["s.del", "s.ins", "s.list", "s.style"]]
+    assert "writeMode" not in body["writeControl"]
+    assert "accepted 4 suggestion(s)" in capsys.readouterr().out
+
+
+def test_reject_named_ids_and_refuse_unknown_or_unclear(fake):
+    _with_suggestions(fake)
+    G.cmd_reject([URL, "s.ins"])
+    assert fake.sent[0]["requests"] == [{"rejectSuggestion": {"suggestionId": "s.ins"}}]
+    with pytest.raises(SystemExit, match="not pending"):
+        G.cmd_accept([URL, "s.nope"])
+    for argv in ([URL], [URL, "--all", "s.ins"]):
+        with pytest.raises(SystemExit, match="--all or suggestion id"):
+            G.cmd_accept(argv)
+    assert len(fake.sent) == 1
+
+
+def test_accept_with_nothing_pending(fake, capsys):
+    G.cmd_accept([URL, "--all"])
+    assert fake.sent == [] and "no pending suggestions" in capsys.readouterr().out
+
+
+def test_read_ids_shows_suggestion_ids(fake, capsys):
+    _with_suggestions(fake)
+    G.cmd_read([URL, "--ids"])
+    out = capsys.readouterr().out
+    assert "[-Was-]{s.del}[+ now+]{s.ins}" in out and "4 pending suggestion(s)" in out

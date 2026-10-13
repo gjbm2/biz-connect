@@ -30,9 +30,11 @@ Verbs
                                                       replace text that occurs exactly once, in place
   delete  <file|doc> <anchor> [--suggest] [--dry-run] remove the one paragraph containing <anchor>
                                                       (--suggest: write as suggestions to accept/reject)
-  read    <file|doc> [--md]                           print the Doc as text to quote from: exact
+  read    <file|doc> [--md] [--ids]                   print the Doc as text to quote from: exact
                                                       characters, # headings, * bullets, | rows |,
                                                       pending suggestions as [+ins+] / [-del-]
+  accept|reject <file|doc> (--all | <id>...) [--dry-run]
+                                                      accept or reject pending suggestions
   link  <file> <doc-url-or-id>                        bind an existing Doc to a local file
   status [file]                                       show drift (local vs last sync, + Doc mod time)
   list                                                list all bindings in this repo
@@ -1268,15 +1270,19 @@ def _plan_delete(tab, tab_id, anchor):
     return [{"deleteContentRange": {"range": rng}}], p
 
 
-def _marked_text(p):
-    """A paragraph's text with pending suggestions marked [+inserted+] and [-deleted-]."""
+def _marked_text(p, ids=False):
+    """A paragraph's text with pending suggestions marked [+inserted+] and [-deleted-]
+    (ids=True appends each one's suggestion id, for `accept` / `reject`)."""
     out = []
     for e in p.get("elements", []):
         tr = e.get("textRun") or {}
         c = tr.get("content", "").replace("\n", "")
-        if c:
-            out.append(f"[-{c}-]" if tr.get("suggestedDeletionIds") else
-                       f"[+{c}+]" if tr.get("suggestedInsertionIds") else c)
+        if not c:
+            continue
+        sid = tr.get("suggestedDeletionIds") or tr.get("suggestedInsertionIds")
+        tag = "{" + ",".join(sid) + "}" if ids and sid else ""
+        out.append(f"[-{c}-]{tag}" if tr.get("suggestedDeletionIds") else
+                   f"[+{c}+]{tag}" if tr.get("suggestedInsertionIds") else c)
     return "".join(out)
 
 
@@ -1289,7 +1295,7 @@ def _suggestion_ids(p):
     return ids
 
 
-def _read_lines(tab):
+def _read_lines(tab, show_ids=False):
     """(lines, pending suggestion ids): the Doc's body as text to quote from, one line per
     paragraph: '#' headings, '* ' bullets, '| a | b |' table rows."""
     lines, ids = [], set()
@@ -1297,7 +1303,7 @@ def _read_lines(tab):
         if "paragraph" in el:
             p = el["paragraph"]
             ids |= _suggestion_ids(p)
-            t = _marked_text(p)
+            t = _marked_text(p, show_ids)
             if not t.strip():
                 continue
             named = p.get("paragraphStyle", {}).get("namedStyleType", "")
@@ -1315,7 +1321,8 @@ def _read_lines(tab):
                     paras = [c["paragraph"] for c in cell.get("content", []) if "paragraph" in c]
                     for q in paras:
                         ids |= _suggestion_ids(q)
-                    cells.append(" / ".join(t for t in map(_marked_text, paras) if t.strip()))
+                    cells.append(" / ".join(t for t in (_marked_text(q, show_ids) for q in paras)
+                                            if t.strip()))
                 lines.append("| " + " | ".join(cells) + " |")
     return lines, ids
 
@@ -1332,11 +1339,62 @@ def cmd_read(argv):
             _die_google(e, doc_id)
         return
     d, tab, _tab_id = _fetch_doc(_docs(data), doc_id)
-    lines, ids = _read_lines(tab)
+    lines, _ids = _read_lines(tab, show_ids="--ids" in argv)
+    pending = _all_suggestion_ids(d)
     print(f"{d.get('title', '')}  ({label})")
-    if ids:
-        print(f"{len(ids)} pending suggestion(s): text marked [+inserted+] or [-deleted-]")
+    if pending:
+        print(f"{len(pending)} pending suggestion(s): text marked [+inserted+] or [-deleted-]"
+              + (" {suggestion id}" if "--ids" in argv else "; --ids shows their ids"))
     print("\n" + "\n".join(lines))
+
+
+def _all_suggestion_ids(node):
+    """Every pending suggestion id anywhere in a documents.get response: text, paragraph and
+    text styles, bullets, tables, lists, objects and document styles."""
+    ids = set()
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k.startswith("suggested"):
+                if isinstance(v, list) and k in ("suggestedInsertionIds", "suggestedDeletionIds"):
+                    ids.update(v)
+                elif isinstance(v, str) and k == "suggestedInsertionId":
+                    ids.add(v)
+                elif isinstance(v, dict):                   # suggested*Changes: keyed by id
+                    ids.update(v)
+            ids |= _all_suggestion_ids(v)
+    elif isinstance(node, list):
+        for x in node:
+            ids |= _all_suggestion_ids(x)
+    return ids
+
+
+def _resolve_suggestions(argv, verb):
+    pos = [a for a in argv if not a.startswith("--")]
+    if not pos or (("--all" in argv) == (len(pos) > 1)):
+        sys.exit(f"{verb} needs <file|doc-url> and either --all or suggestion id(s) "
+                 f"(`gdoc read <doc> --ids` shows them)")
+    data, doc_id, label = _edit_target(pos[0])
+    docs = _docs(data)
+    d, _tab, _tab_id = _fetch_doc(docs, doc_id)
+    pending = _all_suggestion_ids(d)
+    ids = sorted(pending) if "--all" in argv else pos[1:]
+    unknown = [i for i in ids if i not in pending]
+    if unknown:
+        sys.exit(f"not pending in the Doc: {', '.join(unknown)}. Nothing was written.")
+    if not ids:
+        print(f"no pending suggestions in {label}")
+        return
+    kind = "acceptSuggestion" if verb == "accept" else "rejectSuggestion"
+    _send_edit(docs, doc_id, d["revisionId"], [{kind: {"suggestionId": i}} for i in ids],
+               "--dry-run" in argv, f"{verb}ed {len(ids)} suggestion(s) in {label}")
+
+
+def cmd_accept(argv):
+    _resolve_suggestions(argv, "accept")
+
+
+def cmd_reject(argv):
+    _resolve_suggestions(argv, "reject")
 
 
 def cmd_delete(argv):
@@ -1477,7 +1535,7 @@ VERBS = {
     "status": cmd_status, "list": cmd_list,
     "comments": cmd_comments, "annotate": cmd_annotate, "diff": cmd_diff, "resolve": cmd_resolve,
     "docx": cmd_docx, "read": cmd_read, "insert": cmd_insert, "replace": cmd_replace,
-    "delete": cmd_delete,
+    "delete": cmd_delete, "accept": cmd_accept, "reject": cmd_reject,
 }
 
 

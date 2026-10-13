@@ -54,8 +54,19 @@ bizconnect gdoc read "<link>"     # check: your suggestions show as [+inserted+]
 `gdoc read <file|doc-url>` prints the Doc one line per paragraph, in the Doc's **exact
 characters**: quote these for anchors and `replace`. Headings show as `#`, bullets as `* `,
 table rows as `| a | b |`, the title as `(title)`, and pending suggestions as `[+inserted+]`
-and `[-deleted-]`. `--md` prints Drive's Markdown export instead: it shows bold, italic and
-links, but escapes characters (`\$`, `2026\.`), so never quote it into `replace`.
+and `[-deleted-]` (`--ids` adds each one's suggestion id). `--md` prints Drive's Markdown
+export instead: it shows bold, italic and links, but escapes characters (`\$`, `2026\.`), so
+never quote it into `replace`.
+
+## Accepting or rejecting suggestions
+
+```bash
+bizconnect gdoc accept <file|doc-url> --all              # every pending suggestion, anyone's
+bizconnect gdoc reject <file|doc-url> <id> [<id> ...]    # ids from `gdoc read <doc> --ids`
+```
+
+Only when the user asks: deciding on suggestions is their call, and `--all` takes everyone's,
+not just yours. Each call is one guarded write, like the edits below.
 
 ## Passage edits (in place)
 
