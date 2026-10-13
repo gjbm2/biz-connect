@@ -5,7 +5,7 @@
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 V="${1:?usage: scripts/release.sh <version>  e.g. 0.2.0}"
-PY="${PYTHON:-python3}"; command -v "$PY" >/dev/null 2>&1 || PY=python
+PY="${PYTHON:-python3}"; "$PY" -c "" >/dev/null 2>&1 || PY=python   # Windows: python3 may be the Store stub
 
 cd "$ROOT"
 if ! { git diff --quiet && git diff --cached --quiet && [ -z "$(git status --porcelain)" ]; }; then
