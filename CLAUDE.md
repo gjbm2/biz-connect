@@ -17,7 +17,7 @@ In the Claude Code REPL:
 
 This makes the plugin's skills available in **every** project after the next session start:
 `gdoc-sync`, `notion-sync`, `notion-notes`, `sheet-io`, `slides-edit`, `workbook-diff`, `git-flow`, `doc-pipeline`,
-`feedback-ingest`, `register`, `new-submission`, `biz-connect-setup`. Skills (and the
+`feedback-ingest`, `register`, `new-submission`, `browser-bridge`, `biz-connect-setup`. Skills (and the
 `bizconnect` command) load only at session start, so start a new session after installing or
 updating.
 
@@ -77,6 +77,7 @@ bizconnect sheet   read|write|append <sheet-url>            # service-account Sh
 bizconnect slides  outline|thumb|pdf|build|apply|hide|move|insert|notes <deck>   # Google Slides (slides-edit skill)
 bizconnect xlsx    diff OLD.xlsx NEW.xlsx                   # structural workbook diff
 bizconnect git     save|sync|pr                             # safe, standardised git flow
+bizconnect browser install|status|add|menu                  # Ask Claude browser extension (browser-bridge skill)
 bizconnect compose status|run|accept|graph                  # doc-composition pipeline (needs pipeline.yaml); `run inputs` syncs sources
 bizconnect doctor                                           # diagnose setup
 bizconnect update                                           # check for a newer version

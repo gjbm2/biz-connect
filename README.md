@@ -297,10 +297,11 @@ Maintainers: releasing, the roadmap and internal notes are in
 | `register` | `init pull upsert open status resolve journal` | Notion-DB open-points register for review feedback (the feedback roundtrip's spine) |
 | `docreg` | `init log list pull` | Notion catalogue of produced Doc instances/versions; `gdoc push --new --version` logs each major build |
 | `secrets` | `pull status` | pull a repo's shared scoped credentials (GCP Secret Manager) into the central store |
+| `browser` | `install status add remove default menu uninstall` | the **Ask Claude** browser extension: select text on any page, right-click, and Claude Code acts on it in your workspace (that repo's CLAUDE.md, skills, plugins, MCP). Notion and Google Docs edits go through `notion`/`gdoc`; other sites are edited in the page. Installed unpacked; talks to a local native-messaging host, no port. Menu items run skills, configured under `browser:` in `connections.yaml`. The **browser-bridge** skill has the guide |
 
 Plus `bizconnect doctor` / `init` / `update` / `version`. Skills (`/biz-connect:gdoc-sync`,
 `notion-sync`, `notion-notes`, `sheet-io`, `workbook-diff`, `git-flow`, `doc-pipeline`, `feedback-ingest`,
-`register`, `new-submission`, `biz-connect-setup`) wrap these for Claude.
+`register`, `new-submission`, `browser-bridge`, `biz-connect-setup`) wrap these for Claude.
 
 ### Google Docs ownership
 
@@ -368,6 +369,10 @@ bizconnect/
     notion.py      Notion API helpers + token verbs (whoami/check/read/upload/fill/sync)
     notiontree.py  two-way file <-> Notion sync via notion.yaml (link/map/outline/locate/diff/status/push/pull)
     compose.py  register.py  docreg.py  deliverable.py  secrets.py
+    browser.py     `bizconnect browser` (install / status / workspaces / menu)
+  browser_host.py  the browser bridge's native-messaging host (runs Claude Code via the Agent SDK)
+browser/extension/      the Ask Claude extension (MV3, loaded unpacked; fixed id via manifest `key`)
+browser/launch.py, browser/requirements.txt   host launcher + the bridge venv's packages
 scripts/bizconnect.py   self-bootstrapping launcher (creates the central-store venv)
 scripts/install.*, scripts/release.sh
 skills/                 plugin skills (one dir per affordance)
@@ -385,3 +390,8 @@ requirements.txt, requirements-dev.txt
 - Access to any Google file is gated by sharing it with the service-account email;
   broad scopes don't widen the blast radius beyond what's shared. Access to Notion is gated
   the same way, by connecting pages to the integration.
+- The browser bridge opens no port: the extension reaches its host only through the browser's
+  native messaging, and the host accepts only the extension's fixed id. Page content reaches
+  Claude marked as untrusted data; page tools write text into the user's own selection and
+  can't click, submit or navigate; a deny list (sending email/messages, Workflow, plus
+  `browser.deny`) holds in every permission mode.

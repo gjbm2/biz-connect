@@ -1,0 +1,6 @@
+# biz-connect browser bridge: the native-messaging host's own venv
+# (~/.config/biz-connect/browser/.venv, made by `bizconnect browser install`). Kept apart from the
+# main requirements because the Agent SDK bundles a copy of Claude Code (~250 MB), and only people
+# who use the browser extension need it.
+claude-agent-sdk>=0.2.160
+ruamel.yaml>=0.18

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ask Claude</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header>
+    <div class="brand"><img src="icons/icon32.png" alt="" width="18" height="18"> Ask Claude</div>
+    <label class="ws">in <select id="workspace" title="Workspace (the repo Claude Code runs in)"></select></label>
+    <span id="dot" class="dot" title="Bridge"></span>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <section id="context" class="card" hidden>
+    <div class="ctx-head">
+      <span id="site" class="badge"></span>
+      <span id="page" class="page"></span>
+      <button id="recapture" class="link" title="Use the current selection in the active tab">Use current selection</button>
+    </div>
+    <blockquote id="selection" class="sel"></blockquote>
+    <textarea id="paste" class="paste" rows="4" hidden
+      placeholder="This page doesn't expose its selection (Google Docs draws text on a canvas). Copy the passage there (Ctrl+C) and paste it here (Ctrl+V)."></textarea>
+    <div id="anchor" class="anchor"></div>
+  </section>
+
+  <section id="empty" class="card muted">
+    Select text on a page, then right-click → <b>Ask Claude…</b>, or press <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd>.
+  </section>
+
+  <main id="log" aria-live="polite"></main>
+
+  <footer>
+    <div id="chips" class="chips"></div>
+    <div class="composer">
+      <textarea id="input" rows="3" placeholder="What should Claude do with this?"></textarea>
+      <div class="row">
+        <span id="meta" class="meta"></span>
+        <button id="stop" class="secondary" hidden>Stop</button>
+        <button id="send">Run</button>
+      </div>
+      <div class="row small">
+        <button id="newrun" class="link" hidden>New session</button>
+        <button id="vscode" class="link" hidden>Continue in VS Code</button>
+        <button id="copysid" class="link" hidden title="Copy the resume command">Copy resume command</button>
+      </div>
+    </div>
+  </footer>
+  <script src="panel.js"></script>
+</body>
+</html>

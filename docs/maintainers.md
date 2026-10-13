@@ -23,6 +23,21 @@ Internal notes for people developing biz-connect itself. Users need only the
   clone, so an edit there is live locally at once. `scripts/release.sh` is what ships changes
   to other machines and users.
 
+## Browser bridge
+
+- `browser/extension/` is the MV3 extension, loaded unpacked. Its manifest `key` fixes the id
+  (`lapfcbolncefglmmgofpggdigjchekbe`, `browser_host.EXTENSION_ID`; a test checks they agree). The
+  private key was never kept: unpacked loading needs only the public one. Bump the manifest
+  `version` when the extension changes, and `browser_host.PROTOCOL` (and `PROTOCOL` in panel.js)
+  when the host/panel messages change incompatibly.
+- `bizconnect browser install` copies `browser/launch.py` into the central store; the registered
+  host script runs it under the bridge venv (`browser/requirements.txt`, kept out of the main
+  requirements because the Agent SDK bundles ~250 MB). launch.py finds the current plugin folder
+  at each start, so updates don't break the registration. `install --dev` pins it to a clone.
+- Test the host without a browser by speaking native messaging to the host script (4-byte
+  length + JSON) and answering `page_tool` / `permission` messages; test the extension in a full
+  Chromium with `--load-extension` (headless shells can't load extensions).
+
 ## Cutting a release
 
 1. Commit the change first: `scripts/release.sh` commits **only** the version bump, and it

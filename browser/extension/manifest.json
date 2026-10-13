@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "biz-connect: Ask Claude",
+  "short_name": "Ask Claude",
+  "version": "1.0.0",
+  "description": "Select text on any page and hand it to Claude Code in your biz-connect workspace.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyNiqPlDBNKeFp9xo1yZ3Kf6bCLMN7qty8TUelnMI9RLtIuAf2uUueT+Eu5ReL9VnqMXuLR/cTcG9bP/E+QFcZ1jUzYQ6/YaDXdgYEHP6d9e3hIsRwyEviY/XpqStZyKbS2vWOTfF/CFgTXduB/5wa+fVcE0k/sIXOY08uOeQ69fsO9avBOSzoKysBu6zsv6bsk//HWFJkUjXzfYZ0QbrjiO3tTZ0md8FWLI4Cp7DQsvVLkeIXMa+GvlWpxSfjJRoNT4OoQesKWR8UmCzFqFOzKAaG3AHi8cLZfx7plphKsXZc0GzMzvM6MCD0gObu4uOHjWO1ImCkTz88nHy3R3zrQIDAQAB",
+  "minimum_chrome_version": "116",
+  "permissions": ["contextMenus", "sidePanel", "nativeMessaging", "scripting", "storage", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "side_panel": { "default_path": "panel.html" },
+  "action": { "default_title": "Ask Claude about this page" },
+  "commands": {
+    "ask-claude": {
+      "suggested_key": { "default": "Alt+Shift+A" },
+      "description": "Ask Claude about the selection"
+    }
+  },
+  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+}

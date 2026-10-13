@@ -1,6 +1,6 @@
 """bizconnect CLI — `bizconnect <service> <verb> [args]`.
 
-Services:  gdoc | notion | sheet | slides | xlsx | git | compose | deliverable | register | docreg | secrets
+Services:  gdoc | notion | sheet | slides | xlsx | git | compose | deliverable | register | docreg | secrets | browser
 Top-level: doctor | init | update | version | help
 
 Normally invoked through the `bizconnect` command shim (bin/, on PATH inside Claude Code)
@@ -22,7 +22,8 @@ SERVICES = {"gdoc": "gdocs", "gdocs": "gdocs", "notion": "notion",
             "xlsx": "xlsx", "workbook": "xlsx",
             "compose": "compose", "register": "register", "docreg": "docreg",
             "secrets": "secrets", "secret": "secrets",
-            "deliverable": "deliverable", "deliverables": "deliverable"}
+            "deliverable": "deliverable", "deliverables": "deliverable",
+            "browser": "browser"}
 
 NOTION_INTEGRATIONS_URL = "https://www.notion.so/profile/integrations"
 
@@ -46,6 +47,7 @@ USAGE = """biz-connect — business-service connectors for this repo.
   bizconnect register init|pull|upsert|open|status|resolve|journal   Notion open-points register (review feedback)
   bizconnect docreg  init|log|list|pull   Notion catalogue of produced doc instances + versions
   bizconnect secrets pull|status          pull this repo's shared scoped creds (GCP Secret Manager) into the central store
+  bizconnect browser install|status|add|menu|uninstall   browser extension: select text on a page, hand it to Claude Code
 
 Notion sync is configured per folder in notion.yaml; other bindings (which Doc/page this
 repo uses) live in ./connections.yaml. The doc pipeline is configured by ./pipeline.yaml
