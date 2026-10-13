@@ -616,12 +616,8 @@ class Host:
 
 def _plugin_enabled() -> bool:
     """True when biz-connect is enabled in the user's Claude Code settings (then it loads anyway)."""
-    p = Path.home() / ".claude" / "settings.json"
-    try:
-        d = json.loads(p.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return False
-    return any(k.startswith("biz-connect@") and v is True for k, v in (d.get("enabledPlugins") or {}).items())
+    from . import config
+    return config.claude_plugin_state() is True
 
 
 # ----------------------------------------------------------------------------- main

@@ -35,6 +35,7 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "_loaded", False)
     monkeypatch.setattr(update, "check", lambda force=False: {"installed": PLUGIN_VERSION,
                                                               "latest": PLUGIN_VERSION})
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))   # never the real ~/.claude
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "connections.yaml").write_text("notion: {}\n", encoding="utf-8")
@@ -147,6 +148,43 @@ def test_doctor_warns_on_notion_version_override(store, monkeypatch, capsys):
     stub_api(monkeypatch, 200, {"name": "Test Bot"})
     assert cli.cmd_doctor() == 0
     assert "NOTION_VERSION" in capsys.readouterr().out
+
+
+def _claude_settings(tmp_path, plugins):
+    d = tmp_path / "claude"
+    d.mkdir(exist_ok=True)
+    (d / "settings.json").write_text(json.dumps({"enabledPlugins": plugins}), encoding="utf-8")
+
+
+def test_doctor_warns_when_the_plugin_is_disabled(store, tmp_path, monkeypatch, capsys):
+    home, _repo = store
+    (home / "secrets.env").write_text("NOTION_TOKEN=secret_dummy\n", encoding="utf-8")
+    stub_api(monkeypatch, 200, {"name": "Test Bot"})
+    _claude_settings(tmp_path, {"biz-connect@biz-connect": False, "other@x": True})
+    assert cli.cmd_doctor() == 0                      # a warning, not a failure
+    out = capsys.readouterr().out
+    assert "DISABLED" in out and "claude plugin enable biz-connect@biz-connect" in out
+
+
+def test_doctor_reports_an_enabled_plugin(store, tmp_path, monkeypatch, capsys):
+    home, _repo = store
+    (home / "secrets.env").write_text("NOTION_TOKEN=secret_dummy\n", encoding="utf-8")
+    stub_api(monkeypatch, 200, {"name": "Test Bot"})
+    _claude_settings(tmp_path, {"biz-connect@biz-connect": True})
+    assert cli.cmd_doctor() == 0
+    out = capsys.readouterr().out
+    assert "Claude Code:" in out and "DISABLED" not in out
+
+
+def test_claude_plugin_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    assert config.claude_plugin_state() is None       # no settings file
+    _claude_settings(tmp_path, {"vercel@x": True})
+    assert config.claude_plugin_state() is None       # no biz-connect entry
+    _claude_settings(tmp_path, {"biz-connect@biz-connect": False})
+    assert config.claude_plugin_state() is False
+    _claude_settings(tmp_path, {"biz-connect@biz-connect": True})
+    assert config.claude_plugin_state() is True
 
 
 # --------------------------------------------------------------------- secrets

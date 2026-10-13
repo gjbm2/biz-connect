@@ -246,6 +246,18 @@ def cmd_doctor():
             hint = "missing (run via `bizconnect` / scripts/bizconnect.py to bootstrap)"
             (rep.fail if needed else rep.warn)(label, hint)
 
+    # -- Claude Code: installed is not enough. A disabled plugin loads no skills and puts no
+    # `bizconnect` on PATH, yet everything above still passes (doctor runs via the launcher).
+    plugin = config.claude_plugin_state()
+    if plugin is not None:
+        print("Claude Code:")
+        if plugin:
+            rep.line("plugin", "enabled")
+        else:
+            rep.warn("plugin", "biz-connect is installed but DISABLED: its skills don't load and "
+                     "`bizconnect` isn't on PATH in sessions. Run `claude plugin enable "
+                     "biz-connect@biz-connect`, then start a new session.")
+
     # -- this repo
     if root:
         print(f"repo: {root}  (root from {root_kind})")
