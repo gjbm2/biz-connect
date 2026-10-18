@@ -615,3 +615,19 @@ def test_toggle_edited_inside_is_updated_in_place(env):
     run(env, "push")
     assert fake.ids_of(env["sub"])[1] != h
     assert run(env, "status")[0] == {}
+
+
+def test_subpage_inside_a_toggle_is_kept_and_toggle_stays_managed(env):
+    fake = env["fake"]
+    manifest(env, "toggles: true\n" + MAP % env["sub"])
+    run(env, "pull")
+    (env["proj"] / "insights.md").write_text(TOGGLE_PAGE, encoding="utf-8")
+    run(env, "push")
+    h = fake.ids_of(env["sub"])[1]
+    child = fake.new_page("A document", parent=h, blocks=[P("doc body")])   # someone files a sub-page in the toggle
+    assert run(env, "status")[0] == {}                                       # still in sync: sub-pages don't count
+    (env["proj"] / "insights.md").write_text(TOGGLE_PAGE.replace("- 66% connect", "- 66% connect\n- 70% stay"), encoding="utf-8")
+    assert run(env, "push")[0] == {"insights.md": "pushed"}
+    assert fake.ids_of(env["sub"])[1] == h and child in fake.ids_of(h)       # edited in place; sub-page untouched
+    txt = run(env, "pull") and (env["proj"] / "insights.md").read_text(encoding="utf-8")
+    assert run(env, "status")[0] == {}

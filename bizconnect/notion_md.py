@@ -776,12 +776,19 @@ def is_toggle(block):
     return t == "toggle" or (t in HEADING_TYPES and bool((block.get(t) or {}).get("is_toggleable")))
 
 
+SUBPAGES = ("child_page", "child_database")
+
+
 def fully_managed(blocks):
     """Is every block in `blocks` (and inside them) one the Markdown owns? Empty paragraphs
-    (Notion spacing) don't count against it. A toggle holding anything else stays unmanaged."""
+    (Notion spacing) don't count against it, and nor do sub-pages placed in a toggle: those are
+    never touched by a push and show as `<!-- notion:child_page ... -->` on pull. A toggle
+    holding anything else (a file, an embed, a column) stays unmanaged."""
     for c in blocks:
         t = c.get("type")
         if t == "paragraph" and not plain(c["paragraph"].get("rich_text")) and not children_of(c):
+            continue
+        if t in SUBPAGES:
             continue
         if not is_managed(c):
             return False

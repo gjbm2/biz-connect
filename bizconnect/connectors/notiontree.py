@@ -567,6 +567,10 @@ def fetch_blocks(block_id, toggles=False):
     return out
 
 
+def _holds_subpage(block):
+    return any(c.get("type") in M.SUBPAGES or _holds_subpage(c) for c in M.children_of(block))
+
+
 def get_page(pid):
     st, pg = N.api("GET", "/pages/%s" % pid)
     if st in (400, 404):
@@ -1483,7 +1487,8 @@ class Tree:
     def _adopt(self, parent_id, kind, title):
         want = "child_page" if kind == "page" else "child_database"
         mapped = {self._id(x) for x in self.items.values()}
-        for b in self.page_blocks(parent_id):
+        # top level only: a recursive page_blocks() of a big page per created page is minutes each
+        for b in N.get_children(parent_id):
             if b.get("type") == want and b["id"] not in mapped and \
                     (b.get(want, {}).get("title") or "").strip() == title.strip():
                 return b["id"]
@@ -1620,6 +1625,11 @@ class Tree:
                 added += len(api_blocks)
         for i, b in enumerate(managed):
             if i not in matched_r:
+                if _holds_subpage(b):           # deleting it would archive the sub-page with it
+                    self.out("  ! kept a block that holds a sub-page (%s): move the page out in Notion, "
+                             "then push again to remove it" % M.plain((b.get(b["type"]) or {}).get("rich_text"))[:60])
+                    removed -= 1
+                    continue
                 N.delete_block(b["id"])
         return {"added": added, "removed": removed, "kept": len(pairs) + len(soft)}
 
