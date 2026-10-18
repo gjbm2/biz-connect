@@ -28,7 +28,10 @@ Verbs
                                                       paragraph containing <anchor>, in place
   replace <file|doc> <find> <with> [--suggest] [--dry-run]
                                                       replace text that occurs exactly once, in place
-  delete  <file|doc> <anchor> [--suggest] [--dry-run] remove the one paragraph containing <anchor>
+  delete  <file|doc> <anchor> [--through <anchor2>] [--suggest] [--dry-run]
+                                                      remove the one paragraph containing <anchor>
+                                                      (--through: and everything up to the paragraph
+                                                      containing <anchor2>, tables included)
                                                       (--suggest: write as suggestions to accept/reject)
   read    <file|doc> [--md] [--ids]                   print the Doc as text to quote from: exact
                                                       characters, # headings, * bullets, | rows |,
@@ -1072,8 +1075,9 @@ def _para_style(tpl, named):
 
 def _base_text(tpl):
     """The text style a new paragraph starts from: its template's plain (non-bold) run,
-    without the emphasis and links that the Markdown sets explicitly."""
-    runs = tpl["runs"] if tpl else []
+    without the emphasis and links that the Markdown sets explicitly. A linked run is never
+    copied: its blue underline would make plain text look like a broken link."""
+    runs = [r for r in (tpl["runs"] if tpl else []) if not r.get("textStyle", {}).get("link")]
     if not runs:
         return {}
     run = next((r for r in runs if not r.get("textStyle", {}).get("bold")), runs[0])
@@ -1252,24 +1256,31 @@ def cmd_replace(argv):
                done, suggest=suggest)
 
 
-def _plan_delete(tab, tab_id, anchor):
-    """(requests, paragraph) to remove the one body paragraph containing `anchor`."""
+def _plan_delete(tab, tab_id, anchor, through=None):
+    """(requests, first paragraph, element count) to remove the one body paragraph containing
+    `anchor`, or with `through` everything from it to the paragraph containing `through`
+    (tables between included)."""
     content = tab.get("body", {}).get("content", [])
-    p = _find_anchor(_body_paras(tab), anchor)
-    if all(r.get("suggestedDeletionIds") for r in p["runs"] if r.get("content", "").strip()):
+    paras = _body_paras(tab)
+    p = _find_anchor(paras, anchor)
+    q = _find_anchor(paras, through) if through else p
+    if q["start"] < p["start"]:
+        sys.exit(f"--through {through!r} comes before {anchor!r}; name the passage's last paragraph.")
+    if q is p and all(r.get("suggestedDeletionIds") for r in p["runs"] if r.get("content", "").strip()):
         sys.exit(f"{p['text'].strip()[:60]!r} is already marked for deletion. Nothing was written.")
     i = next(k for k, el in enumerate(content)
-             if "paragraph" in el and el.get("startIndex") == p["start"])
+             if "paragraph" in el and el.get("startIndex") == q["start"])
     nxt = content[i + 1] if i + 1 < len(content) else None
     if nxt is None:
         sys.exit("can't remove the Doc's last paragraph; replace its text instead.")
     if "paragraph" not in nxt:
         sys.exit("can't remove the paragraph just before a table (Google keeps that line); "
                  "replace its text instead.")
-    rng = {"startIndex": p["start"], "endIndex": p["end"]}
+    rng = {"startIndex": p["start"], "endIndex": q["end"]}
     if tab_id:
         rng["tabId"] = tab_id
-    return [{"deleteContentRange": {"range": rng}}], p
+    n = sum(1 for el in content if p["start"] <= el.get("startIndex", -1) < q["end"])
+    return [{"deleteContentRange": {"range": rng}}], p, n
 
 
 def _marked_text(p, ids=False):
@@ -1478,19 +1489,63 @@ def cmd_rows(argv):
                f"{anchor_cells[0][:50]!r} in {label}", suggest=suggest)
 
 
-def cmd_delete(argv):
-    pos = [a for a in argv if a not in ("--dry-run", "--suggest")]
+def _plan_unlink_look(tab, tab_id, anchor, through=None):
+    """(requests, run count) clearing the blue underline from text that carries no link, in
+    the paragraphs from `anchor` to `through`. Only underline and colour change; text, bold and
+    real links are left alone."""
+    paras = _body_paras(tab)
+    p = _find_anchor(paras, anchor)
+    q = _find_anchor(paras, through) if through else p
+    if q["start"] < p["start"]:
+        sys.exit(f"--through {through!r} comes before {anchor!r}; name the passage's last paragraph.")
+    reqs = []
+    for el in tab.get("body", {}).get("content", []):
+        if "paragraph" not in el or not p["start"] <= el.get("startIndex", -1) <= q["start"]:
+            continue
+        for e in el["paragraph"].get("elements", []):
+            ts = (e.get("textRun") or {}).get("textStyle", {})
+            if "textRun" not in e or ts.get("link") or not (ts.get("underline") or ts.get("foregroundColor")):
+                continue
+            rng = {"startIndex": e["startIndex"], "endIndex": e["endIndex"]}
+            if tab_id:
+                rng["tabId"] = tab_id
+            reqs.append({"updateTextStyle": {"range": rng, "textStyle": {},
+                                             "fields": "underline,foregroundColor"}})
+    return reqs, len(reqs)
+
+
+def cmd_plain(argv):
+    through = _opt(argv, "--through")
+    pos = [a for a in argv if a not in ("--dry-run", "--through", through)]
     if len(pos) != 2 or not pos[1]:
-        sys.exit("delete needs <file|doc-url> <anchor text>")
+        sys.exit("plain needs <file|doc-url> <anchor text> [--through <last anchor>]")
     arg, anchor = pos
     data, doc_id, label = _edit_target(arg)
     docs = _docs(data)
     d, tab, tab_id = _fetch_doc(docs, doc_id)
-    reqs, p = _plan_delete(tab, tab_id, anchor)
-    suggest = "--suggest" in argv
+    reqs, n = _plan_unlink_look(tab, tab_id, anchor, through)
+    if not reqs:
+        print(f"nothing to clear: no unlinked blue or underlined text there in {label}")
+        return
     _send_edit(docs, doc_id, d["revisionId"], reqs, "--dry-run" in argv,
-               f"{'suggested deleting' if suggest else 'deleted'} paragraph "
-               f"{p['text'].strip()[:50]!r} in {label}", suggest=suggest)
+               f"cleared link styling from {n} unlinked run(s) in {label}")
+
+
+def cmd_delete(argv):
+    through = _opt(argv, "--through")
+    pos = [a for a in argv if a not in ("--dry-run", "--suggest", "--through", through)]
+    if len(pos) != 2 or not pos[1]:
+        sys.exit("delete needs <file|doc-url> <anchor text> [--through <last anchor>]")
+    arg, anchor = pos
+    data, doc_id, label = _edit_target(arg)
+    docs = _docs(data)
+    d, tab, tab_id = _fetch_doc(docs, doc_id)
+    reqs, p, n = _plan_delete(tab, tab_id, anchor, through)
+    suggest = "--suggest" in argv
+    what = (f"{n} paragraph(s)/table(s) from {p['text'].strip()[:50]!r}" if through
+            else f"paragraph {p['text'].strip()[:50]!r}")
+    _send_edit(docs, doc_id, d["revisionId"], reqs, "--dry-run" in argv,
+               f"{'suggested deleting' if suggest else 'deleted'} {what} in {label}", suggest=suggest)
 
 
 def _refresh_live_word_doc(target: Path, content: bytes, save: bool) -> bool:
@@ -1616,7 +1671,7 @@ VERBS = {
     "status": cmd_status, "list": cmd_list,
     "comments": cmd_comments, "annotate": cmd_annotate, "diff": cmd_diff, "resolve": cmd_resolve,
     "docx": cmd_docx, "read": cmd_read, "insert": cmd_insert, "replace": cmd_replace,
-    "delete": cmd_delete, "accept": cmd_accept, "reject": cmd_reject, "rows": cmd_rows,
+    "delete": cmd_delete, "plain": cmd_plain, "accept": cmd_accept, "reject": cmd_reject, "rows": cmd_rows,
 }
 
 

@@ -439,6 +439,47 @@ def test_delete_removes_one_whole_paragraph(fake):
     assert body["writeControl"]["writeMode"] == "SUGGEST"
 
 
+def test_new_text_never_copies_a_links_blue_underline():
+    blue = {"underline": True, "foregroundColor": {"color": {"rgbColor": {"blue": 0.8}}},
+            "link": {"url": "https://example.com"}}
+    linked = P("Context page", bullet=True, runs=[("Context page", blue)])
+    tab = make_doc([linked])["tabs"][0]["documentTab"]
+    (para,) = G._body_paras(tab)
+    assert G._base_text(para) == {}
+    mixed = P("See the page", runs=[("See ", {"fontSize": {"magnitude": 11}}), ("the page", blue)])
+    (para,) = G._body_paras(make_doc([mixed])["tabs"][0]["documentTab"])
+    assert G._base_text(para) == {"fontSize": {"magnitude": 11}}
+
+
+def test_plain_clears_link_look_from_unlinked_text_only(fake):
+    blue = {"underline": True, "foregroundColor": {"color": {"rgbColor": {"blue": 0.8}}}}
+    fake.doc = make_doc([P("Start", runs=[("Start", blue)]),
+                         P("Mid real link", runs=[("Mid ", {"bold": True}),
+                                                  ("real link", {**blue, "link": {"url": "u"}})]),
+                         P("End", runs=[("End", blue)]), P("Outside", runs=[("Outside", blue)])])
+    G.cmd_plain([URL, "Start", "--through", "End"])
+    (body,) = fake.sent
+    ranges = [(r["updateTextStyle"]["range"]["startIndex"], r["updateTextStyle"]["fields"])
+              for r in body["requests"]]
+    content = fake.doc["tabs"][0]["documentTab"]["body"]["content"]
+    starts = [content[i]["startIndex"] for i in (1, 3)]
+    assert ranges == [(s, "underline,foregroundColor") for s in starts]
+
+
+def test_delete_through_removes_a_passage_with_its_table(fake):
+    fake.doc = make_doc([P("Keep"), P("First"), P("Middle"), P("Last"), P("After")], table_after=2)
+    G.cmd_delete([URL, "First", "--through", "Last"])
+    (body,) = fake.sent
+    tab = fake.doc["tabs"][0]["documentTab"]
+    paras = {p["text"].strip(): p for p in G._body_paras(tab)}
+    assert body["requests"] == [{"deleteContentRange": {"range": {
+        "startIndex": paras["First"]["start"], "endIndex": paras["Last"]["end"], "tabId": "t.0"}}}]
+    with pytest.raises(SystemExit, match="comes before"):
+        G.cmd_delete([URL, "Last", "--through", "First"])
+    with pytest.raises(SystemExit, match="last paragraph"):
+        G.cmd_delete([URL, "First", "--through", "After"])
+
+
 def test_delete_refuses_last_paragraph_table_neighbour_and_repeat(fake):
     with pytest.raises(SystemExit, match="last paragraph"):
         G.cmd_delete([URL, "Sep 2026"])
