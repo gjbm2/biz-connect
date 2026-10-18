@@ -101,6 +101,7 @@ folder `projects/x/`:
 ```yaml
 hub: https://www.notion.so/acme/Project-Hub-<page-id>       # default container
 link_base: https://github.com/org/repo/blob/main/projects/x/  # optional: where links out of the folder point
+toggles: true                            # optional: <details> blocks <-> Notion toggles (see "What round-trips")
 map:
   - path: thesis.md
     section: Current thinking            # blocks under that heading on the hub, up to the next
@@ -257,10 +258,28 @@ Folders that contain a `notion.yaml` are kept in two-way sync with Notion (notio
 
 Headings, paragraphs, bold/italic/strike/code, links, bulleted/numbered/to-do lists (nested),
 quotes, `> [!NOTE]` callouts, code blocks, dividers, tables and images all round-trip. Other
-blocks (toggles, embeds, columns, synced blocks, files, child pages/databases) show as
+blocks (embeds, columns, synced blocks, files, child pages/databases) show as
 `<!-- notion:... -->` comments on pull. They are **never** changed by push. Colours, mentions
 and comments survive on any block whose text didn't change, because unchanged blocks are left
 alone.
+
+**Toggles** round-trip in a folder whose `notion.yaml` has `toggles: true` (top level, next to
+`hub:`). In the file a toggle is an HTML `<details>` block, which GitHub also shows collapsed:
+
+```markdown
+<details>
+<summary>Toggle text, **inline** Markdown allowed</summary>
+
+Any Markdown, including images, tables and nested <details>.
+
+</details>
+```
+
+A summary that starts `## ` (or `### `, `# `) makes a **toggle heading** of that level. A
+toggle in Notion that holds something Markdown can't express (a file, an embed, a child page)
+stays a `<!-- notion:toggle ... -->` comment and is never rewritten. Without `toggles: true`
+every toggle is left alone, as before. Turning it on for a folder whose pages already have
+toggles makes them part of the content: run `status`, then `pull`, once after switching it on.
 
 Limits:
 

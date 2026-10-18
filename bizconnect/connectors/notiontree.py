@@ -553,12 +553,17 @@ def save_state(root, full):
 
 
 # ============================================================ remote reads
-def fetch_blocks(block_id):
-    """Children of `block_id`, with `_children` loaded where a managed block needs them."""
+def fetch_blocks(block_id, toggles=False):
+    """Children of `block_id`, with `_children` loaded where a managed block needs them.
+    With `toggles`, a toggle (or toggle heading) is managed (`_toggle`) only when everything
+    inside it is: one holding a file, an embed or a child page is left alone."""
     out = N.get_children(block_id)
     for b in out:
-        if b.get("has_children") and (M.is_managed(b) or b.get("type") == "paragraph"):
-            b["_children"] = fetch_blocks(b["id"])
+        tog = toggles and M.is_toggle(b)
+        if b.get("has_children") and (tog or M.is_managed(b) or b.get("type") == "paragraph"):
+            b["_children"] = fetch_blocks(b["id"], toggles)
+        if tog:
+            b["_toggle"] = M.fully_managed(b.get("_children") or [])
     return out
 
 
@@ -599,12 +604,17 @@ def shift_headings(blocks, level):
         t = b.get("type")
         if t in HEADINGS:
             L = int(t[-1])
+            extra = {k: v for k, v in b.items() if k not in ("type", t)}      # e.g. `_toggle`
             if level >= 3:
                 rich = [dict(r, annotations={**(r.get("annotations") or {}), "bold": True}) for r in b[t]["rich_text"]]
+                if b[t].get("is_toggleable"):        # a toggle heading becomes a bold toggle
+                    body = {k: v for k, v in b[t].items() if k != "is_toggleable"}
+                    out.append({**extra, "type": "toggle", "toggle": dict(body, rich_text=rich)})
+                    continue
                 out.append({"type": "paragraph", "paragraph": {"rich_text": rich}})
                 continue
             nl = min(3, max(level + 1, L + level - 1))
-            out.append({"type": "heading_%d" % nl, "heading_%d" % nl: b[t]})
+            out.append({**extra, "type": "heading_%d" % nl, "heading_%d" % nl: b[t]})
         else:
             out.append(b)
     return out
@@ -736,6 +746,7 @@ class Tree:
         self.hub = N.norm_id(str(self.man["hub"]))
         self.link_base = self.man.get("link_base") or None
         self.style = _style(self.man)
+        self.toggles = bool(self.man.get("toggles"))      # opt-in: <details> <-> Notion toggles
         self.dry, self.force, self.prune, self.deep, self.out = dry, force, prune, deep, out
         self._loaded_tool = _tool_fields(self.man)     # what save() diffs against (see save)
         self.full_state = load_state(self.root)
@@ -913,7 +924,7 @@ class Tree:
     # ------------------------------------------------------------- remote pages
     def page_blocks(self, pid):
         if pid not in self._blocks:
-            self._blocks[pid] = fetch_blocks(pid)
+            self._blocks[pid] = fetch_blocks(pid, self.toggles)
         return self._blocks[pid]
 
     def invalidate(self, pid):
@@ -1155,7 +1166,7 @@ class Tree:
         raw, text = read_text(p)
         fm, rest = M.split_front_matter(text)
         title, body = M.split_title(rest)
-        return {"exists": True, "title": title, "blocks": M.parse_blocks(body), "fm": fm,
+        return {"exists": True, "title": title, "blocks": M.parse_blocks(body, self.toggles), "fm": fm,
                 "sha": _sha(raw), "has_h1": title is not None}
 
     def render_local(self, blocks, fr):
@@ -1688,11 +1699,10 @@ class Tree:
             self.bad_rows[k] = msg
             self.note("error", k, msg)
 
-    @staticmethod
-    def _parse_row(it, raw, text):
+    def _parse_row(self, it, raw, text):
         fm, body = M.split_front_matter(text)
         values = _yaml_load(fm) if fm is not None else {}
-        return {"item": it, "values": values, "blocks": M.parse_blocks(body), "sha": _sha(raw),
+        return {"item": it, "values": values, "blocks": M.parse_blocks(body, self.toggles), "sha": _sha(raw),
                 "stem": it["path"].stem, "text": text}
 
     def schema(self, it, remote_props, local_rows):
@@ -1754,7 +1764,7 @@ class Tree:
         if not idx:
             return ""
         _t, body = M.split_title(M.split_front_matter(read_text(idx)[1])[1])
-        paras = [b for b in M.parse_blocks(body) if b["type"] == "paragraph"]
+        paras = [b for b in M.parse_blocks(body, self.toggles) if b["type"] == "paragraph"]
         return M.plain(paras[0]["paragraph"]["rich_text"])[:1900] if paras else ""
 
     def _query_rows(self, did):
@@ -1830,7 +1840,7 @@ class Tree:
         if not fetch and s and s.get("remote_edited") == pg.get("last_edited_time") \
                 and s.get("remote_props") == _jsha(vals):
             return vals, None, None                  # unchanged since last sync (cheap path)
-        blocks = fetch_blocks(pg["id"])
+        blocks = fetch_blocks(pg["id"], self.toggles)
         return vals, blocks, self.row_canon(vals, self.render_remote(it, blocks, rk))
 
     def _row_verdict(self, rk, row, remote_canon, local_canon):

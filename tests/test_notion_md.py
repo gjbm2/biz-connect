@@ -207,3 +207,98 @@ def test_escaped_pipe_in_table_code_cell():
     assert [M._seg_parts(r)[0] for r in cell] == ["x|y"]
     r1 = M.render_blocks(b1)
     assert M.render_blocks(M.parse_blocks(r1)) == r1
+
+
+TOGGLES = """\
+Intro
+
+<details>
+<summary>Plain **toggle**</summary>
+
+Inside para.
+
+- a
+- b
+
+<details>
+<summary>Nested</summary>
+
+Deep text.
+
+</details>
+
+</details>
+
+<details>
+<summary>## A toggle heading</summary>
+
+| x | y |
+|---|---|
+| 1 | 2 |
+
+</details>
+
+<details>
+<summary>Empty one</summary>
+</details>
+
+- item
+
+  <details>
+  <summary>in a list</summary>
+
+  child text
+
+  </details>
+
+```
+<details>
+not a toggle in code
+```
+"""
+
+
+def test_toggles_parse_only_when_enabled():
+    b = M.parse_blocks(TOGGLES, toggles=True)
+    assert _types(b) == ["paragraph", "toggle", "heading_2", "toggle", "bulleted_list_item", "code"]
+    t = b[1]
+    assert t["_toggle"] and M.plain(t["toggle"]["rich_text"]) == "Plain toggle"
+    assert _types(t["toggle"]["children"]) == ["paragraph", "bulleted_list_item", "bulleted_list_item", "toggle"]
+    h = b[2]["heading_2"]
+    assert h["is_toggleable"] and M.plain(h["rich_text"]) == "A toggle heading"
+    assert _types(h["children"]) == ["table"]
+    assert "children" not in b[3]["toggle"]
+    assert b[4]["bulleted_list_item"]["children"][0]["type"] == "toggle"
+    assert all(M.is_managed(x) for x in b)
+    # off (the default): unchanged behaviour, `<details>` stays text
+    assert "toggle" not in _types(M.parse_blocks(TOGGLES))
+
+
+def test_toggles_render_idempotently():
+    r1 = M.render_blocks(M.parse_blocks(TOGGLES, toggles=True))
+    assert M.render_blocks(M.parse_blocks(r1, toggles=True)) == r1
+    assert "<summary>## A toggle heading</summary>" in r1
+
+
+def test_toggle_summary_forms_and_escapes():
+    b = M.parse_blocks("<details><summary><h3>Big</h3></summary>\n\nx\n\n</details>", toggles=True)
+    assert b[0]["type"] == "heading_3" and b[0]["heading_3"]["is_toggleable"]
+    # a plain toggle whose text starts with '#' must not come back as a heading
+    blk = {"type": "toggle", "toggle": {"rich_text": [M.seg("# not a heading")]}, "_toggle": True}
+    back = M.parse_blocks(M.render_blocks([blk]), toggles=True)[0]
+    assert back["type"] == "toggle" and M.plain(back["toggle"]["rich_text"]) == "# not a heading"
+    # malformed (no summary / never closed): plain text, nothing swallowed
+    assert _types(M.parse_blocks("<details>\nno summary\n\nafter", toggles=True)) == ["paragraph", "paragraph"]
+    assert _types(M.parse_blocks("<details>\n<summary>s</summary>\n\nopen", toggles=True))[-1] == "paragraph"
+    # a paragraph that starts with '<details>' text stays a paragraph
+    p = {"type": "paragraph", "paragraph": {"rich_text": [M.seg("<details> is HTML")]}}
+    assert M.parse_blocks(M.render_blocks([p]), toggles=True)[0]["type"] == "paragraph"
+
+
+def test_unflagged_toggles_stay_unmanaged():
+    tog = {"type": "toggle", "toggle": {"rich_text": [M.seg("t")]}, "id": "x"}
+    th = {"type": "heading_2", "heading_2": {"rich_text": [M.seg("h")], "is_toggleable": True}, "id": "y"}
+    assert not M.is_managed(tog) and not M.is_managed(th)
+    assert M.render_blocks([tog, th], markers=True) == '<!-- notion:toggle "t" -->\n\n<!-- notion:heading_2 "h" -->'
+    f = {"type": "file", "file": {}, "id": "f"}
+    assert not M.fully_managed([f]) and M.fully_managed([{"type": "paragraph", "paragraph": {"rich_text": []}}])

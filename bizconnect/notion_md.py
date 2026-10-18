@@ -11,16 +11,32 @@ survive. The one invariant the converter must hold is idempotence:
 
   render(parse(render(x))) == render(x)
 
-Blocks Markdown can't express (child pages/databases, toggles, embeds, synced blocks,
-columns, PDFs/files, ...) are UNMANAGED: never created, changed or deleted by a push,
-excluded from signatures, and shown on pull as an HTML comment (`<!-- notion: ... -->`)
-that the parser ignores.
+Blocks Markdown can't express (child pages/databases, embeds, synced blocks, columns,
+PDFs/files, ...) are UNMANAGED: never created, changed or deleted by a push, excluded from
+signatures, and shown on pull as an HTML comment (`<!-- notion: ... -->`) that the parser
+ignores.
 
 Supported Markdown: `#`..`###` headings (deeper -> ###), paragraphs (soft-wrapped lines join
 with a space; `<br>` = line break), `-`/`*`/`+`, `1.` and `- [ ]` lists (nested by indent),
 `>` quotes, GitHub alerts (`> [!NOTE]`) as callouts, fenced code, `---` dividers, pipe
 tables, a line holding just `![caption](src)` as an image, and inline **bold**, *italic*,
 ~~strike~~, `code` and [links](url).
+
+Toggles (opt-in: `parse_blocks(md, toggles=True)`; the sync turns it on with `toggles: true`
+in notion.yaml) are HTML `<details>` blocks, which GitHub also renders as collapsibles:
+
+    <details>
+    <summary>Toggle text, with **inline** Markdown</summary>
+
+    Any Markdown, including nested <details>.
+
+    </details>
+
+A summary that starts `## ` (or `<h2>...</h2>`) is a toggle HEADING of that level. Toggles
+the Markdown owns carry `_toggle: True`. Without it, a toggle (or toggle heading) stays
+unmanaged, as before. The sync sets the flag on a fetched toggle only when everything inside
+it is managed, so a toggle that holds a file, an embed or a child page is never rewritten
+(a rewrite would lose them).
 """
 from __future__ import annotations
 
@@ -32,7 +48,8 @@ import string
 TEXT_TYPES = ("paragraph", "heading_1", "heading_2", "heading_3", "bulleted_list_item",
               "numbered_list_item", "to_do", "quote", "callout")
 LIST_TYPES = ("bulleted_list_item", "numbered_list_item", "to_do")
-MANAGED = set(TEXT_TYPES) | {"code", "divider", "table", "image"}
+MANAGED = set(TEXT_TYPES) | {"code", "divider", "table", "image", "toggle"}
+HEADING_TYPES = ("heading_1", "heading_2", "heading_3")
 
 ALERTS = {"NOTE": "ℹ️", "TIP": "💡", "IMPORTANT": "❗", "WARNING": "⚠️", "CAUTION": "🛑"}
 ALERT_OF_ICON = {v: k for k, v in ALERTS.items()}
@@ -64,6 +81,10 @@ _TODO = re.compile(r"^\[([ xX])\]\s+(.*)$")
 _IMAGE_LINE = re.compile(r'^!\[(.*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)$')
 _TABLE_SEP = re.compile(r"^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$")
 _ALERT = re.compile(r"^\[!(\w+)\]\s*(.*)$")
+_DETAILS = re.compile(r"^<details(?:\s[^>]*)?>\s*(?:<summary>(.*)</summary>)?\s*$", re.I)
+_SUMMARY = re.compile(r"^<summary>(.*)</summary>\s*$", re.I)
+_DETAILS_END = re.compile(r"^</details>\s*$", re.I)
+_SUMMARY_HEADING = re.compile(r"^(?:(#{1,6})\s+(.*?)\s*#*|<h([1-6])>(.*)</h\3>)$", re.I)
 
 
 # ============================================================= rich text model
@@ -423,7 +444,7 @@ def _render_run(segs, before="", after="", star=False):
 
 def _escape_leading(line):
     """Stop paragraph text that LOOKS like a block marker from re-parsing as one."""
-    if re.match(r"^(#{1,6}\s|>|[-+*]\s|\d{1,9}[.)]\s|```|~~~|\||!\[|<!--|\[[ xX]\]\s)", line) or _HR.match(line):
+    if re.match(r"^(#{1,6}\s|>|[-+*]\s|\d{1,9}[.)]\s|```|~~~|\||!\[|<!--|</?details|\[[ xX]\]\s)", line, re.I) or _HR.match(line):
         m = re.match(r"^(\d{1,9})([.)])(.*)$", line, re.S)
         if m:
             return m.group(1) + "\\" + m.group(2) + m.group(3)
@@ -452,21 +473,73 @@ def _expand(line):
     return line.replace("\t", "    ")
 
 
-def _starts_block(line):
+def _starts_block(line, toggles=False):
     s = line.strip()
     return bool(not s or _FENCE.match(line) or _HEADING.match(s) or _HR.match(s)
                 or s.startswith(">") or _LIST.match(line) or s.startswith("<!--")
-                or _IMAGE_LINE.match(s))
+                or _IMAGE_LINE.match(s)
+                or (toggles and (_DETAILS.match(s) or _DETAILS_END.match(s))))
 
 
-def parse_blocks(md):
+def parse_blocks(md, toggles=False):
     """Markdown body -> list of blocks (create-shape; children under block[type]['children']).
-    Links keep their RAW targets; local images carry `_src` for the caller to upload."""
+    Links keep their RAW targets; local images carry `_src` for the caller to upload.
+    `toggles=True` also reads `<details>` blocks as toggles (see the module docstring)."""
     lines = [_expand(l) for l in (md or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")]
-    return _parse(lines)
+    return _parse(lines, toggles)
 
 
-def _parse(lines):
+def _details(lines, i, toggles):
+    """A `<details>` block starting at lines[i] -> (toggle block, next index), or None when
+    it isn't a well-formed one (no `<summary>` line, or no closing `</details>`)."""
+    n = len(lines)
+    m = _DETAILS.match(lines[i].strip())
+    summary, j = m.group(1), i + 1
+    if summary is None:
+        while j < n and not lines[j].strip():
+            j += 1
+        sm = _SUMMARY.match(lines[j].strip()) if j < n else None
+        if not sm:
+            return None
+        summary, j = sm.group(1), j + 1
+    body, depth, fence = [], 1, None
+    while j < n:
+        l = lines[j]
+        s = l.strip()
+        fm = _FENCE.match(l)
+        if fence:
+            if fm and fm.group(2)[0] == fence[0] and len(fm.group(2)) >= len(fence) and not fm.group(3):
+                fence = None
+        elif fm:
+            fence = fm.group(2)
+        elif _DETAILS.match(s):
+            depth += 1
+        elif _DETAILS_END.match(s):
+            depth -= 1
+            if depth == 0:
+                break
+        body.append(l)
+        j += 1
+    if depth:
+        return None
+    dd = min([_indent(l) for l in body if l.strip()] or [0])
+    kids = _parse([l[dd:] if l.strip() else "" for l in body], toggles)
+    summary = summary.strip()
+    hm = _SUMMARY_HEADING.match(summary)
+    if hm:
+        level = min(int(len(hm.group(1)) if hm.group(1) else hm.group(3)), 3)
+        btype = "heading_%d" % level
+        blk = _text_block(btype, parse_inline(hm.group(2) if hm.group(1) else hm.group(4)), is_toggleable=True)
+    else:
+        btype = "toggle"
+        blk = _text_block(btype, parse_inline(summary))
+    if kids:
+        blk[btype]["children"] = kids
+    blk["_toggle"] = True
+    return blk, j + 1
+
+
+def _parse(lines, toggles=False):
     out, i, n = [], 0, len(lines)
     while i < n:
         line = lines[i]
@@ -474,6 +547,12 @@ def _parse(lines):
         if not s:
             i += 1
             continue
+        if toggles and _DETAILS.match(s):
+            got = _details(lines, i, toggles)
+            if got:
+                out.append(got[0])
+                i = got[1]
+                continue
         if s.startswith("<!--"):
             while i < n and "-->" not in lines[i]:
                 i += 1
@@ -528,11 +607,11 @@ def _parse(lines):
             continue
         m = _LIST.match(line)
         if m:
-            blk, i = _list_item(lines, i)
+            blk, i = _list_item(lines, i, toggles)
             out.append(blk)
             continue
         para = []
-        while i < n and lines[i].strip() and (not para or not _starts_block(lines[i])):
+        while i < n and lines[i].strip() and (not para or not _starts_block(lines[i], toggles)):
             para.append(lines[i])
             i += 1
         out.append(_text_block("paragraph", parse_inline(_join_para(para))))
@@ -619,7 +698,7 @@ def _image(src, caption):
     return {"type": "image", "image": {"_src": src, "caption": caption}}
 
 
-def _list_item(lines, i):
+def _list_item(lines, i, toggles=False):
     m = _LIST.match(lines[i])
     ind, marker, gap, text = len(m.group(1)), m.group(2), m.group(3), m.group(4)
     content_ind = ind + len(marker) + min(len(gap), 4)
@@ -628,8 +707,8 @@ def _list_item(lines, i):
     # lazy/indented continuation of the item's first paragraph
     cont = [text]
     while i < n and lines[i].strip() and not _LIST.match(lines[i]) and not (
-            _indent(lines[i]) <= ind and _starts_block(lines[i])):
-        if _indent(lines[i]) >= content_ind and _starts_block(lines[i][content_ind:]):
+            _indent(lines[i]) <= ind and _starts_block(lines[i], toggles)):
+        if _indent(lines[i]) >= content_ind and _starts_block(lines[i][content_ind:], toggles):
             break
         cont.append(lines[i])
         i += 1
@@ -664,7 +743,7 @@ def _list_item(lines, i):
         else:
             btype, extra = "bulleted_list_item", {}
     blk = _text_block(btype, parse_inline(body), **extra)
-    kids = _parse(region) if region else []
+    kids = _parse(region, toggles) if region else []
     if kids:
         blk[btype]["children"] = kids
     return blk, i
@@ -686,8 +765,28 @@ def is_managed(block):
         return False
     if t == "paragraph" and not plain(block["paragraph"].get("rich_text")) and not children_of(block):
         return False
-    if t in ("heading_1", "heading_2", "heading_3") and block[t].get("is_toggleable"):
-        return False
+    if t == "toggle" or (t in HEADING_TYPES and block[t].get("is_toggleable")):
+        return bool(block.get("_toggle"))
+    return True
+
+
+def is_toggle(block):
+    """A toggle, or a toggle heading?"""
+    t = block.get("type")
+    return t == "toggle" or (t in HEADING_TYPES and bool((block.get(t) or {}).get("is_toggleable")))
+
+
+def fully_managed(blocks):
+    """Is every block in `blocks` (and inside them) one the Markdown owns? Empty paragraphs
+    (Notion spacing) don't count against it. A toggle holding anything else stays unmanaged."""
+    for c in blocks:
+        t = c.get("type")
+        if t == "paragraph" and not plain(c["paragraph"].get("rich_text")) and not children_of(c):
+            continue
+        if not is_managed(c):
+            return False
+        if t != "table" and not fully_managed(children_of(c)):
+            return False
     return True
 
 
@@ -745,6 +844,15 @@ def _render_block(b, href, media, markers):
     def ri(rich):                            # edge whitespace can't survive a re-parse
         return render_inline(rich, href).strip()
 
+    if is_toggle(b):
+        summary = ri(body.get("rich_text"))
+        if t == "toggle":
+            summary = "\\" + summary if summary.startswith("#") or re.match(r"<h[1-6]>", summary, re.I) else summary
+        else:
+            summary = "#" * int(t[-1]) + " " + summary
+        s = "<details>\n<summary>%s</summary>" % summary
+        inner = render_blocks(kids, href, media, markers) if kids else ""
+        return s + ("\n\n" + inner + "\n\n" if inner.strip() else "\n") + "</details>"
     if t == "paragraph":
         s = _escape_leading(ri(body.get("rich_text")))
     elif t.startswith("heading_"):

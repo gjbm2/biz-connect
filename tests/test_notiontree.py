@@ -498,3 +498,97 @@ def test_locate_maps_and_pulls_an_unmapped_section(env, capsys):
     assert res == {"josh.md": "pushed"}
     assert fake.texts(hub)[:3] == [("heading_1", "What does Josh think?"), ("paragraph", "Filled."),
                                    ("heading_1", "What does Nous have?")]
+
+
+def T_(text, kids=(), heading=0):
+    t = "heading_%d" % heading if heading else "toggle"
+    body = {"rich_text": [{"type": "text", "text": {"content": text}}], "children": list(kids)}
+    if heading:
+        body["is_toggleable"] = True
+    return {"type": t, t: body}
+
+
+TOGGLE_PAGE = """\
+# Behavioural insights
+
+Lead line.
+
+<details>
+<summary>## Funnel</summary>
+
+- 66% connect
+
+<details>
+<summary>Detail</summary>
+
+Deep **text**.
+
+</details>
+
+</details>
+"""
+
+
+def test_toggles_push_and_repush_without_churn(env):
+    fake = env["fake"]
+    manifest(env, "toggles: true\n" + MAP % env["sub"])
+    run(env, "pull")
+    (env["proj"] / "insights.md").write_text(TOGGLE_PAGE, encoding="utf-8")
+    assert run(env, "push")[0] == {"insights.md": "pushed"}
+    top = fake.texts(env["sub"])
+    assert top == [("paragraph", "Lead line."), ("heading_2", "Funnel")]
+    h = fake.ids_of(env["sub"])[1]
+    assert fake.blocks[h]["heading_2"]["is_toggleable"]
+    assert fake.texts(h) == [("bulleted_list_item", "66% connect"), ("toggle", "Detail")]
+    assert fake.texts(fake.ids_of(h)[1]) == [("paragraph", "Deep text.")]
+    ids = fake.ids_of(env["sub"])
+    assert run(env, "status")[0] == {}
+    assert run(env, "push")[0] == {}
+    assert fake.ids_of(env["sub"]) == ids                      # nothing rewritten
+    # a Notion edit inside a toggle comes back on pull
+    fake.edit_text(fake.ids_of(fake.ids_of(h)[1])[0], "Edited in Notion.")
+    assert run(env, "status")[0] == {"insights.md": "remote-ahead"}
+    run(env, "pull")
+    assert "Edited in Notion." in (env["proj"] / "insights.md").read_text(encoding="utf-8")
+    assert run(env, "status")[0] == {}
+
+
+def test_toggle_holding_a_file_is_left_alone(env):
+    fake = env["fake"]
+    up = fake.api("POST", "/file_uploads", body={"filename": "deck.pdf"})[1]["id"]
+    fake._insert(env["sub"], [T_("Has a file", [{"type": "pdf", "pdf": {"type": "file_upload", "file_upload": {"id": up}}}]),
+                              T_("Plain", [P("inside")])])
+    manifest(env, "toggles: true\n" + MAP % env["sub"])
+    run(env, "pull")
+    txt = (env["proj"] / "insights.md").read_text(encoding="utf-8")
+    assert '<!-- notion:toggle "Has a file" -->' in txt
+    assert "<details>\n<summary>Plain</summary>\n\ninside\n\n</details>" in txt
+    (env["proj"] / "insights.md").write_text(txt.replace("inside", "inside, edited"), encoding="utf-8")
+    assert run(env, "push")[0] == {"insights.md": "pushed"}
+    kinds = fake.texts(env["sub"])
+    assert ("toggle", "Has a file") in kinds and ("toggle", "Plain") in kinds
+
+
+def test_toggles_off_by_default_leave_notion_toggles_alone(env):
+    fake = env["fake"]
+    fake._insert(env["sub"], [T_("Hand-made", [P("x")]), T_("Toggle heading", [P("y")], heading=2)])
+    manifest(env, MAP % env["sub"])
+    run(env, "pull")
+    txt = (env["proj"] / "insights.md").read_text(encoding="utf-8")
+    assert '<!-- notion:toggle "Hand-made" -->' in txt and '<!-- notion:heading_2 "Toggle heading" -->' in txt
+    (env["proj"] / "insights.md").write_text(txt + "\nNew line.\n", encoding="utf-8")
+    assert run(env, "push")[0] == {"insights.md": "pushed"}
+    assert ("toggle", "Hand-made") in fake.texts(env["sub"])
+
+
+def test_toggle_heading_in_a_section_shifts_level(env):
+    manifest(env, "toggles: true\n" + MAP % env["sub"])
+    run(env, "pull")
+    (env["proj"] / "nous.md").write_text(
+        "# What does Nous have?\n\n<details>\n<summary># Big toggle</summary>\n\n- inside\n\n</details>\n",
+        encoding="utf-8")
+    assert run(env, "push")[0] == {"nous.md": "pushed"}
+    kinds = env["fake"].texts(env["hub"])
+    assert ("heading_2", "Big toggle") in kinds                  # under the H1 section, never ends it
+    assert ("heading_1", "What do we know?") in kinds
+    assert run(env, "status")[0] == {}

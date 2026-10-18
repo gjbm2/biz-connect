@@ -142,6 +142,9 @@ git add projects/x && git commit -m "..."                        # commit the fi
 ```
 
 - `status` shows a verdict per item and makes no writes; `diff <path>` shows Notion vs the file.
+- `toggles: true` in a folder's `notion.yaml` syncs Notion toggles and toggle headings as HTML
+  `<details>` / `<summary>` blocks (a summary starting `## ` is a toggle heading). Off by default;
+  a toggle holding a file, embed or child page is always left alone.
 - `notion.yaml` records a fingerprint of what both sides held at each item's last sync
   (`synced`). Because it is committed, a new machine or a teammate's clone can tell a Notion
   edit from a commit that was never pushed. `pull` before editing, as always.
