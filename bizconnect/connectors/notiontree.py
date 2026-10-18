@@ -1594,8 +1594,11 @@ class Tree:
         rs = [M.signature(b, rhref, rmedia) for b in managed]
         ls = [M.signature(b, lhref, lmedia) for b in local_blocks]
         pairs = lcs_pairs(rs, ls)
-        matched_r = {i for i, _ in pairs}
-        by_l = {j: i for i, j in pairs}
+        # a changed toggle whose summary is unchanged is updated inside, not replaced: its
+        # unchanged children (and their comments) survive, and nothing is re-uploaded
+        soft = self._toggle_pairs(managed, local_blocks, pairs, (rhref, rmedia), (lhref, lmedia))
+        matched_r = {i for i, _ in pairs + soft}
+        by_l = {j: i for i, j in pairs + soft}
         groups, anchor, cur = [], start_after, None
         for j, b in enumerate(local_blocks):
             if j in by_l:
@@ -1607,7 +1610,10 @@ class Tree:
             cur[1].append(b)
         # build every payload (uploads included) before the first write: a failure here changes nothing
         built = [(a, [x for x in (self.to_api(b, fr) for b in bl) if x]) for a, bl in groups]
-        added = 0
+        added, removed = 0, len(managed) - len(matched_r)
+        for i, j in soft:
+            sub = self.apply_body(managed[i]["id"], M.children_of(managed[i]), M.children_of(local_blocks[j]), fr, it)
+            added, removed = added + sub["added"], removed + sub["removed"]
         for anchor_id, api_blocks in built:
             if api_blocks:
                 N.append_children(parent_id, api_blocks, after=anchor_id, at_start=anchor_id is None)
@@ -1615,7 +1621,26 @@ class Tree:
         for i, b in enumerate(managed):
             if i not in matched_r:
                 N.delete_block(b["id"])
-        return {"added": added, "removed": len(managed) - len(matched_r), "kept": len(pairs)}
+        return {"added": added, "removed": removed, "kept": len(pairs) + len(soft)}
+
+    @staticmethod
+    def _toggle_pairs(managed, local, pairs, rfmt, lfmt):
+        """Pair unmatched remote and local toggles that sit between the same matched blocks and
+        have the same summary (type, level, text): (remote index, local index) pairs."""
+        def head(b, fmt):
+            t = b["type"]
+            return M.signature({"type": t, t: {k: v for k, v in b[t].items() if k != "children"},
+                                "_children": [], "_toggle": True}, *fmt)
+        out = []
+        bounds = [(-1, -1)] + sorted(pairs) + [(len(managed), len(local))]
+        for (r0, l0), (r1, l1) in zip(bounds, bounds[1:]):
+            ri = [i for i in range(r0 + 1, r1) if M.is_toggle(managed[i])]
+            li = [j for j in range(l0 + 1, l1) if M.is_toggle(local[j])]
+            if ri and li:
+                rh = [head(managed[i], rfmt) for i in ri]
+                lh = [head(local[j], lfmt) for j in li]
+                out += [(ri[x], li[y]) for x, y in lcs_pairs(rh, lh)]
+        return out
 
     def to_api(self, block, fr):
         """Parsed block -> API payload: resolve links, chunk long text, upload local images."""

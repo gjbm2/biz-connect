@@ -592,3 +592,26 @@ def test_toggle_heading_in_a_section_shifts_level(env):
     assert ("heading_2", "Big toggle") in kinds                  # under the H1 section, never ends it
     assert ("heading_1", "What do we know?") in kinds
     assert run(env, "status")[0] == {}
+
+
+def test_toggle_edited_inside_is_updated_in_place(env):
+    fake = env["fake"]
+    manifest(env, "toggles: true\n" + MAP % env["sub"])
+    run(env, "pull")
+    (env["proj"] / "insights.md").write_text(TOGGLE_PAGE, encoding="utf-8")
+    run(env, "push")
+    h = fake.ids_of(env["sub"])[1]
+    kids = fake.ids_of(h)
+    inner = fake.ids_of(kids[1])
+    (env["proj"] / "insights.md").write_text(TOGGLE_PAGE.replace("Deep **text**.", "Deep **text**, edited."), encoding="utf-8")
+    assert run(env, "push")[0] == {"insights.md": "pushed"}
+    assert fake.ids_of(env["sub"])[1] == h                      # the toggle heading kept its id
+    assert fake.ids_of(h) == kids                               # so did its children, nested toggle too
+    assert fake.ids_of(kids[1]) != inner                        # only the edited paragraph was replaced
+    assert fake.texts(kids[1]) == [("paragraph", "Deep text, edited.")]
+    assert run(env, "status")[0] == {}
+    # a changed summary still replaces the whole toggle
+    (env["proj"] / "insights.md").write_text(TOGGLE_PAGE.replace("## Funnel", "## Funnel, renamed"), encoding="utf-8")
+    run(env, "push")
+    assert fake.ids_of(env["sub"])[1] != h
+    assert run(env, "status")[0] == {}
